@@ -1,0 +1,20 @@
+tasks/progress.md
+tasks/lessons.md
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Move build artifacts
+move/build/
+
+# Node
+node_modules/
+dist/
+
+# Claude-related (do not upload per user rule)
+.claude/
+CLAUDE.md

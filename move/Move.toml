@@ -1,0 +1,22 @@
+[package]
+name = "predict_league"
+edition = "2024.beta"
+license = "MIT"
+
+[dependencies]
+# System deps (Sui, MoveStdlib) are auto-added in the new package management format.
+
+# M1: DeepBook Predict as explicit git dep (source IS open in deepbookv3/packages/predict).
+# Pulls transitive: deepbook, predict_math, dusdc, token, pyth_lazer, wormhole.
+# Verified testnet package: 0xf5ea2b3749c65d6e56507cc35388719aadb28f9cab873696a2f8687f5c785138
+deepbook_predict = { git = "https://github.com/MystenLabs/deepbookv3.git", subdir = "packages/predict", rev = "main" }
+
+# DUSDC coin type used as the stake currency; transitive of predict but its named address must be
+# in scope for `dusdc::dusdc::DUSDC`, so declare it directly.
+dusdc = { git = "https://github.com/MystenLabs/deepbookv3.git", subdir = "packages/dusdc", rev = "main" }
+
+# pyth_lazer/wormhole are already published on testnet; link against on-chain packages
+# instead of re-publishing. Values mirror packages/predict/Move.toml (sui-testnet).
+[dep-replacements.testnet]
+pyth_lazer = { git = "https://github.com/pyth-network/pyth-crosschain.git", subdir = "lazer/contracts/sui", rev = "sui-testnet", published-at = "0xf5bd2141967507050a91b58de3d95e77c432cd90d1799ee46effc27430a68c21", original-id = "0xf5bd2141967507050a91b58de3d95e77c432cd90d1799ee46effc27430a68c21" }
+wormhole = { git = "https://github.com/pyth-network/wormhole.git", subdir = "sui/wormhole", rev = "sui-testnet", published-at = "0xd5afd4e456e5451f1ca1e7b3d734ce7a0a3b397811a6cb72a4bd1dfc387839f2", original-id = "0xd5afd4e456e5451f1ca1e7b3d734ce7a0a3b397811a6cb72a4bd1dfc387839f2" }
