@@ -88,7 +88,14 @@ place_pick(league, profile, predict: &mut Predict, manager: &mut PredictManager,
            oracle: &OracleSVI, question_id, quantity, stake_coin: Coin<DUSDC>, clock, ctx)
 ```
 Removed params: `config`, `pyth`, `leverage`, `lower_strike`, `higher_strike`, and the
-`generate_proof_as_owner` call. Flow:
+`generate_proof_as_owner` call.
+
+Red-team V11 (LOW): there is no max-cost slippage guard — `mint` withdraws `cost = ask * quantity` at
+the live ask, so a player may pay more premium than expected if the oracle ask moves between intent and
+execution. This risks only the player's own funds in their own tx. The plan may add an optional
+`max_cost` param (abort if `cost > max_cost`) or document the absence. Not security-critical.
+
+Flow:
 1. guards: `!paused`, `questions.contains(question_id)`, `object::id(manager) == profile.predict_manager` (EManagerMismatch)
 2. read `(direction, strike, oracle_id, expiry_ms)` from question; `now < expiry_ms` (EQuestionClosed)
 3. `assert oracle.id() == oracle_id` (EOracleMismatch)
@@ -149,6 +156,15 @@ Rationale: the primary anti-farming defense is #1 (real at-risk stake), which is
 guarantee. Hold-to-settle is a secondary product rule; degrading it to best-effort + fast keeper is an
 honest engineering trade-off given the deployed API, not a weakening of the core defense.
 
+#### Why hold-to-settle resists redeem-and-re-mint churn (red-team V10)
+
+A natural attack on `position > 0`: mint → owner-`redeem` early (de-risk) → re-mint the same
+`MarketKey` just before settlement so `position > 0` is true again at `settle_pick`. This **does not
+work**: `predict::mint` runs `assert_live_oracle` (mint is rejected once the oracle is
+expired/settled), so the only way to have `position > 0` at settlement is to genuinely hold a position
+*through* settlement. The churn just pays two rounds of fees. Hold-to-settle is therefore robust
+against re-mint forgery; the only residual hole is the third-party post-settlement grief (A2 above).
+
 ### Errors
 Remove `EMarketMismatch` (15) — there is no `ExpiryMarket` object to bind. Leave the remaining codes
 unchanged for stability.
@@ -190,11 +206,28 @@ after early redeem aborts `EPositionClosed`, settle against an unsettled oracle 
   `place_pick`, satisfying `mint`'s `sender == owner`); `predict::redeem_permissionless` has no owner
   check (D2 permissionless settlement holds).
 
+## Red-team dispositions (sui-red-team, design-stage)
+
+- **A2 (third-party redeem grief)** — operational mitigation (above). Only EXPLOITED finding.
+- **V10 — redeem/re-mint churn** → DEFENDED by `assert_live_oracle`; documented above (strengthens
+  the model, no change needed).
+- **V5/V6 (MEDIUM, liveness footgun)** — if `publish_question` binds a `strike` off the oracle's
+  `min_strike + tick_size` grid, or an `expiry_ms` ≠ `OracleSVI.expiry()`, then `mint`'s
+  `assert_key_matches` makes **every** `place_pick` on that question abort — the question is silently
+  unfillable. **Plan task:** validate strike-on-grid + expiry alignment at publish time (in
+  `publish_question` and/or the admin tooling), reading `min_strike`/`tick_size`/`expiry` from the
+  bound oracle. Not a security hole but a demo-killer.
+- **V11 (LOW)** — place_pick cost slippage; see the `place_pick` section.
+- Defended (paper): access-control on permissionless settle (triple binding), `EZeroQuantity`/
+  `EZeroStake`, idempotent double-settle, type-confusion on `Coin<DUSDC>`, no-keeper DoS
+  (settle is permissionless).
+
 ## Open items for the plan
 
 - Resolve deployed `deepbook` testnet package id (for `deepbook.published-at`) and the DUSDC package
   published-at source.
-- Confirm `MarketKey.expiry` unit (ms) vs `OracleSVI.expiry()`; align `Question.expiry_ms`.
+- Confirm `MarketKey.expiry` unit (ms) vs `OracleSVI.expiry()`; align `Question.expiry_ms` (ties to V6).
 - Confirm a viable on-grid `strike` (oracle `min_strike` + `tick_size` grid) and a minimum `quantity`
-  that yields `cost > 0` (avoid `EZeroStake`) for the e2e.
+  that yields `cost > 0` (avoid `EZeroStake`) for the e2e (ties to V5).
 - Confirm the oracle must be `status active` at place-pick time (`assert_live_oracle`).
+- Decide V11: add `max_cost` slippage param to `place_pick` or document its absence.
