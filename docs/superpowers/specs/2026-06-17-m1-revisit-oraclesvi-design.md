@@ -117,6 +117,38 @@ Removed param: `market: &ExpiryMarket`. Flow:
 PTB ordering contract: `league::settle_pick` (reads `position > 0`) must run **before** the sibling
 `predict::redeem_permissionless` (which removes the position) in the same PTB.
 
+#### Anti-grief on the `position > 0` hold-to-settle guard (architecture review A1/A2)
+
+`predict::redeem_permissionless` has **no owner check**, takes the **shared** `PredictManager`, and is
+enabled once `oracle.is_settled()`. So any third party can construct the `MarketKey` and redeem any
+manager's position post-settlement — the payout still deposits to the manager owner (no theft), but it
+zeroes `position(key)`. If a griefer does this in the window `[oracle settled, settle_pick called]`,
+the honest `settle_pick` aborts `EPositionClosed` and the winner's league points for that pick are
+**permanently denied** (spite only; griefer gains nothing and pays gas).
+
+**No clean on-chain fix exists** under the deployed (immutable) predict API — the live `position` is
+the only on-chain truth for "held to settlement," yet it is publicly mutable post-settlement. Rejected
+alternatives (each defeated): (1) wrapping settle+redeem in one league function only stops same-PTB
+reordering, not an independent bare-redeem tx; (2) replacing the check with a league-owned `forfeited`
+flag fails because the player can bypass the league wrapper by calling owner-only `predict::redeem`
+directly pre-settle, reopening early-close farming; (3) an admin re-award path cannot distinguish a
+legit owner early-close from a third-party grief — both just zero the position.
+
+**Decision — operational mitigation (layered):**
+1. **Primary:** a first-party keeper subscribes to oracle settlement and batch-calls `settle_pick`
+   for all open picks **the instant** the oracle settles, *before* redeeming — shrinking the grief
+   window `[t_settle, t_settle_pick]` toward zero. A griefer must win a sub-second race for no gain.
+2. **Structural:** within the keeper PTB, `settle_pick` is ordered **before** `redeem_permissionless`
+   (resolves the A1 ordering fragility — the keeper never self-griefs).
+3. **Kept rule:** `position > 0` stays as the correct guard for the common case (a player who
+   *owner-redeems before settlement* legitimately forfeits points).
+4. **Residual (accepted boundary):** a determined griefer who beats the keeper can deny specific
+   picks' points. No fund risk. Documented in the threat model as an operational boundary.
+
+Rationale: the primary anti-farming defense is #1 (real at-risk stake), which is a hard on-chain
+guarantee. Hold-to-settle is a secondary product rule; degrading it to best-effort + fast keeper is an
+honest engineering trade-off given the deployed API, not a weakening of the core defense.
+
 ### Errors
 Remove `EMarketMismatch` (15) — there is no `ExpiryMarket` object to bind. Leave the remaining codes
 unchanged for stability.
@@ -139,8 +171,24 @@ Re-run the Move review chain (move-code-quality → sui-security-guard → sui-r
 Flow: `predict::create_manager` → pick a near-expiry active BTC OracleSVI (read oracle_id / expiry /
 min_strike / tick from indexer) → `publish_question` → `place_pick` (real DUSDC) and assert
 `PickPlaced.stake > 0` → wait past expiry until the oracle settles (a few minutes) → `settle_pick`
-and assert win/points → negative paths: settle after early redeem aborts `EPositionClosed`, settle
-against an unsettled oracle aborts `EOracleNotSettled`.
+(ordered before `redeem_permissionless` in the PTB) and assert win/points → negative paths: settle
+after early redeem aborts `EPositionClosed`, settle against an unsettled oracle aborts
+`EOracleNotSettled`. Positive keeper path: settle immediately on settlement, before redeem, succeeds.
+
+## Architecture review dispositions (sui-architect)
+
+- **A1 (ordering fragility)** + **A2 (third-party redeem grief)** → operational mitigation, see the
+  anti-grief subsection under `settle_pick`. Residual goes to `docs/security/threat-model.md`.
+- **A3 (LOW) — `--skip-dependency-verification` layout trust:** plan must spot-check that the
+  `market_key::MarketKey` struct (fields + abilities `copy,drop,store`) at commit `19f86eb` matches the
+  deployed `0xf5ea2b` layout, since `Pick` stores `MarketKey` by value.
+- **A4 (LOW/INFO) — quote whitelist:** `mint` runs `assert_quote_asset<DUSDC>`; indexer `/config`
+  confirms `quote_assets` includes `…::dusdc::DUSDC`. No action; note in plan.
+- **A5 (INFO) — shared `Predict` singleton serialization:** every mint/settle touches the shared
+  `Predict` (`0xc873…`); no parallelism (pre-existing F3 fact, honestly labeled).
+- Confirmed (load-bearing): `predict::create_manager` sets `owner = ctx.sender()` (player self-signs
+  `place_pick`, satisfying `mint`'s `sender == owner`); `predict::redeem_permissionless` has no owner
+  check (D2 permissionless settlement holds).
 
 ## Open items for the plan
 
