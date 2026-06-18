@@ -108,3 +108,71 @@ settle_pick(league, manager: &PredictManager, market: &ExpiryMarket, oracle: &Ma
 - **Task 6 testnet e2e 未做**（需 live testnet 部署 + DUSDC + 近到期 market）。M1 Move 邏輯完成但 CPI 端到端尚未鏈上實證。
 - **Task 8 Move review chain 待跑**（move-code-quality → sui-security-guard → sui-red-team）。
 - #3 badge 無限鑄仍開（M2）。
+
+## §D5 — 身份模型 + Sybil 邊界 + zkLogin 升級路徑（2026-06-16）
+
+### 鏈上身份抽象（已實作，無需改動）
+身份不綁 wallet address，綁 `sub_commit`（`vector<u8>` hash）：
+
+```
+sub_commit ──VerifierCap 證明──▶ PlayerProfile (owned, owner_sub_commit)
+SubRegistry: sub_commit → profile_addr   （一個 sub 一個 profile，ESubAlreadyRegistered）
+PlayerStat keyed by profile object id（NOT ctx.sender()）→ permissionless settle 不會錯帳
+```
+
+- `create_profile`（`league.move:224`）由 `VerifierCap` gated，attest `sub_commit`。
+- `PlayerStat` 用 profile object id 當 key（`league.move:234-235`），keeper 當 settle sender 也安全。
+
+### Sybil 防護分兩層
+1. **leaderboard 排名 = stake-weighted**（points = `(stake/1e6)*(10+streak)`，已實作）→ 多錢包拆分總 stake 不變，刷分零經濟優勢，**純鏈上 trustless**。
+2. **非線性獎勵**（badge / 賽季名額）= 一人一份，靠 `SubRegistry` + `VerifierCap` 擋一人多 sub。
+
+### v1 → v2 升級路徑（zkLogin 留到下一輪，現在零成本）
+- **v1（現況）**：backend 持 `VerifierCap`，驗使用者身份後寫 `sub_commit`（**半信任邊界，誠實揭露**）。
+- **v2（zkLogin）**：`sub_commit` = OAuth `sub` hash。backend 驗 JWT 後 attest——**同一個 `create_profile`、同一 schema、同一欄位（`owner_sub_commit`），Move 一行不改**。
+- `VerifierCap` 在 v2 仍保留：Sui zkLogin 證的是 address derivation，不直接證 sub，仍需 backend 橋 JWT→sub。
+- **結論**：schema 已 zkLogin-ready，現在做 zkLogin 是純前端/backend 整合工程（無前端殼前等於空轉），延後無反悔成本。
+
+### 已知邊界（誠實揭露）
+- 身份唯一性最終仍依賴 `VerifierCap` holder（backend）誠實 attest sub。完全去中心化 proof-of-personhood（World ID 類）屬 over-engineering，非 hackathon scope。
+
+## M1-REVISIT (2026-06-17) — M1 CPI 打錯版本，須對齊 deployed 舊架構
+
+### 發現（Task 6 偵察觸發）
+- M1（2026-06-15）把 predict CPI 從 `OracleSVI` 改成 `MarketOracle`/`ExpiryMarket`/`ProtocolConfig`/`PythSource`，依據是 deepbookv3 **source HEAD（rev=main, 9f69985）**。
+- 但 testnet 上 live 的 predict（`0xf5ea2b…`，indexer 服務、4232 oracles 全是 `oracle::OracleSVI`）是**舊單體架構**：deployed module = constants,i64,market_key,math,oracle,oracle_config,plp,predict,predict_manager,pricing_config,range_key,rate_limiter,registry,risk_config,strike_matrix,treasury_config,vault。**無 expiry_market/market_oracle/protocol_config/pyth_source**。
+- `Move.lock` deepbook_predict **無 published-at** → rev=main 版未部署 testnet → league 既無法 publish、物件型別也對不上 live markets。
+- 教訓重演 lesson-2：「真實型別是 MarketOracle」是看 source HEAD，沒驗 deployed。實為倒退。2026-05-31 spec（F1–F5, OracleSVI/MarketKey）才對著 deployed。
+
+### 決策：採 Option A — M1 改寫對齊 deployed 舊架構（OracleSVI / MarketKey / predict::Predict）
+理由：唯一能對「真實 live 結算市場」跑 e2e 的路；M1 安全設計（真實 stake delta / 鏈上 settlement_price / hold-to-settle）全部仍成立。Option B（自部署重構版協議）對 hackathon 不現實；Option C（放棄 e2e）少鏈上實證。
+
+### Deployed ABI 對照（已鏈上驗，可行）
+- `predict::create_manager(ctx) -> ID`（建+share manager）
+- `predict::mint<DUSDC>(&mut Predict, &mut PredictManager, &OracleSVI, MarketKey, u64 qty, &Clock, ctx)` — 無 proof/config/pyth/leverage，**不回 order_id**
+- `predict::redeem_permissionless<DUSDC>(&mut Predict, &mut PredictManager, &OracleSVI, MarketKey, u64, &Clock, ctx)`
+- `predict_manager::{deposit<DUSDC>, balance<DUSDC>()->u64, withdraw<DUSDC>, position(MarketKey)->u64}`
+- `oracle::is_settled()->bool`、`oracle::settlement_price()->Option<u64>`（unwrap=EOracleNotSettled，回到舊 F2c）
+- `market_key::new(oracle_id: ID, expiry: u64, strike: u64, is_up: bool) -> MarketKey`（Copy+Drop+Store；DIR_UP→is_up=true）
+
+### 三大安全設計對映
+- 真實 stake = `deposit`→`balance()` 前後 delta（不變）
+- 鏈上 settlement_price = `oracle.settlement_price()` Option unwrap（不變）
+- hold-to-settle 防 early-close：mint 不回 order_id → 改 `predict_manager::position(manager, MarketKey) > 0`（per-MarketKey；per-question 單 pick guard 仍防重複 mint）
+
+### Build 解法（風險#1 RESOLVED）
+- deployed `0xf5ea2b` 部署於 2026-04-16 23:48 UTC；部署前最後一個 predict 變更 commit = **`19f86ebad9c6371c4f5c07229faabb2020dc691c`**（2026-04-14），module 集合與 deployed 逐一相符。
+- Move.toml：`deepbook_predict`/`dusdc`/transitive 釘 `rev = "19f86ebad9c6371c4f5c07229faabb2020dc691c"`；`[dep-replacements.testnet]` 加 `deepbook_predict = { …, published-at = "0xf5ea2b3749c65d6e56507cc35388719aadb28f9cab873696a2f8687f5c785138", original-id = 同上 }`。
+- publish 用 `--skip-dependency-verification`。
+
+### 須改檔（core logic → plan track，待 brainstorming/plan 確認後實作）
+1. `league.move` imports 換舊 module；`Pick.order_id: u256` → 存 `MarketKey`。
+2. `place_pick` 簽名移除 config/pyth/leverage/lower&higher_strike/proof，由 Question 組 MarketKey + qty 呼叫 `predict::mint`。
+3. `settle_pick`：settlement_price Option unwrap；hold-to-settle 改 `position()>0`。
+4. red_team/unit 測試 fixtures 隨型別調整；22/22 須維持。
+5. 之後才做 Task 6 e2e（`scripts/m1_e2e.ts`）。
+
+### 待 planning 解的剩餘小風險
+- grid strike 合法值（須落在 oracle min_strike + tick_size 網格；indexer 有 min_strike/tick_size）。
+- mint 的單一 u64 確認是 quantity 語意 + 最小可行下單量（min size / 保證 balance delta>0 不觸 EZeroStake）。
+- Pyth/oracle 須處於可 mint 狀態（status active）；近到期視窗下單時間。
