@@ -39,8 +39,8 @@ fun stake_inflation_zero_cost_yields_zero_points() {
 // WAS EXPLOITED: the old `settle_pick(settlement_price: u64)` let any permissionless keeper pick the
 // number; the only gate was `price > 0`. A keeper could force a win for a confederate or grief a
 // rival. FIX: production `settle_pick` takes NO price argument — it reads `settlement_price` ONLY
-// from the question's bound, settled `MarketOracle` (`is_settled()` + `settlement_price()`), with the
-// market/oracle double-bound to the question id. A keeper cannot fabricate the price.
+// from the question's bound, settled `OracleSVI` (`is_settled()` + `settlement_price()`), with the
+// oracle bound to the question id (`oracle.id() == q.oracle_id`). A keeper cannot fabricate the price.
 // This exploit test is intentionally REMOVED: with no caller price arg there is nothing to fake at
 // the Move type level. The positive proof that an unsettled oracle is rejected (EOracleNotSettled)
 // and that a held position is required lives in the predict-CPI testnet e2e (Task 6).

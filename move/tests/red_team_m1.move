@@ -1,7 +1,7 @@
 #[test_only]
 /// M1 red-team: adversarial tests against the money path (place_pick/settle_pick/book_*).
 /// These exercise the LOGIC layer reachable in `sui move test`. The predict-object-coupled
-/// bindings (manager/market/oracle, real cost-delta, has_position) cannot be constructed in
+/// bindings (manager/oracle, real cost-delta, position(MarketKey)) cannot be constructed in
 /// unit tests (predict exposes no test ctors) and are assessed by static analysis in the report.
 module predict_league::league_red_team_m1;
 

@@ -5,12 +5,12 @@
 /// shared `League`, enforces one-profile-per-zkLogin-sub (D5), runs permissionless settlement (D2),
 /// and drives the soulbound `badge` via an embedded `BadgeMintCap`.
 ///
-/// M1 coupling (this build): `place_pick` composes `manager.deposit + market.mint` itself and records
+/// M1 coupling (this build): `place_pick` composes `manager.deposit + predict::mint` itself and records
 /// the MEASURED DUSDC cash delta as stake (#1: stake cannot be faked — it is the at-risk cash, not an
 /// unbacked number). `settle_pick` reads `settlement_price` ON-CHAIN from the question's bound,
-/// settled `MarketOracle` (#2/F8 CLOSED: a permissionless keeper can no longer feed a fake price) and
-/// requires the position be held to settlement (anti early-close farming). Custody stays trustless:
-/// funds live in the shared `PredictManager`; the user withdraws later with their own withdraw cap.
+/// settled `OracleSVI` (#2/F8 CLOSED: a permissionless keeper can no longer feed a fake price) and
+/// requires `position(MarketKey) > 0` (held to settlement, anti early-close farming). Custody stays
+/// trustless: funds live in the shared `PredictManager`; the user withdraws later with their own cap.
 module predict_league::league;
 
 use sui::clock::{Self, Clock};
@@ -19,11 +19,10 @@ use sui::bag::{Self, Bag};
 use sui::coin::Coin;
 use sui::event;
 use predict_league::badge::{Self, Badge, BadgeMintCap};
+use deepbook_predict::predict::{Self, Predict};
 use deepbook_predict::predict_manager::PredictManager;
-use deepbook_predict::expiry_market::ExpiryMarket;
-use deepbook_predict::market_oracle::MarketOracle;
-use deepbook_predict::protocol_config::ProtocolConfig;
-use deepbook_predict::pyth_source::PythSource;
+use deepbook_predict::oracle::OracleSVI;
+use deepbook_predict::market_key::{Self, MarketKey};
 use dusdc::dusdc::DUSDC;
 
 // ===== Errors (codes per spec §7) =====
@@ -41,13 +40,15 @@ const EOracleNotSettled: u64 = 11;
 const ENoProfileStat: u64 = 12;
 const EQuestionNotFound: u64 = 13;
 const ENoBadgeYet: u64 = 14;
-const EMarketMismatch: u64 = 15; // market/oracle not the one the question binds
-const EOracleMismatch: u64 = 16; // passed oracle is not this market's oracle
+// 15 retired: was EMarketMismatch — no ExpiryMarket object exists in the deployed API to bind.
+const EOracleMismatch: u64 = 16; // passed oracle is not this question's oracle
 const EManagerMismatch: u64 = 17; // settle manager != the pick's manager
 const EZeroStake: u64 = 18;       // measured mint cost was zero
 const EPositionClosed: u64 = 19;  // position not held to settlement (early-close farming guard)
 const EBadgeAlreadyMinted: u64 = 20; // mint_badge once-guard (#3: unlimited soulbound mint)
 const EInvalidDirection: u64 = 21;   // publish_question: direction outside {DIR_UP, DIR_DOWN}
+const EMaxCostExceeded: u64 = 22; // place_pick: live mint cost exceeded the caller's max_cost (V11 slippage guard)
+const EOracleNotActive: u64 = 23; // publish_question_for_market: oracle not active (expired/settled/inactive)
 
 // ===== Constants =====
 const MS_PER_DAY: u64 = 86_400_000;
@@ -136,7 +137,7 @@ public struct Pick has store {
     question_id: u64,
     direction: u8,
     stake: u64,
-    order_id: u256,
+    market_key: MarketKey, // the deployed market identity; position is keyed by this in PredictManager
     predict_manager: ID,
     placed_ms: u64,
 }
@@ -213,6 +214,25 @@ public fun publish_question(
     id
 }
 
+/// Production entry: publish a question bound to a LIVE OracleSVI. Derives `oracle_id` and
+/// `expiry_ms` from the oracle itself so they can never drift from the market `mint` will check
+/// (`assert_key_matches`) — this closes the V6 expiry-misalignment footgun by construction.
+/// `strike` MUST be on the oracle's `min_strike + k*tick_size` grid; that grid is `public(package)`
+/// in predict and not readable on-chain, so strike-on-grid (V5) is validated by off-chain admin
+/// tooling reading the indexer `/oracles`. An off-grid strike is not unsafe — it makes every
+/// `place_pick` abort in `mint::assert_key_matches` (a demo-killer caught by tooling).
+public fun publish_question_for_market(
+    cap: &LeagueAdminCap,
+    league: &mut League,
+    oracle: &OracleSVI,
+    strike: u64,
+    direction: u8,
+    open_ms: u64,
+): u64 {
+    assert!(oracle.is_active(), EOracleNotActive);
+    publish_question(cap, league, oracle.id(), strike, direction, open_ms, oracle.expiry())
+}
+
 public fun set_paused(_: &LeagueAdminCap, league: &mut League, paused: bool) {
     league.paused = paused;
 }
@@ -268,24 +288,21 @@ fun new_stat(ctx: &mut TxContext): PlayerStat {
 /// measured DUSDC cash delta as stake (#1: stake cannot be faked — it is the at-risk cash, not an
 /// unbacked number). Also rolls the participation streak (streak = consecutive days played, UC2).
 ///
-/// The market is bound to the question's oracle so the position can only exist on THIS market, and
-/// the manager is bound to the player's registered `profile.predict_manager`.
+/// The market (a `MarketKey` value over a shared `OracleSVI`) is bound to the question's oracle so the
+/// position can only exist on THIS market, and the manager is bound to the player's registered
+/// `profile.predict_manager`.
 ///
 /// Aborts: EPaused, EQuestionNotFound, EManagerMismatch, EQuestionClosed (clock >= expiry),
-/// ENoProfileStat, EAlreadyPicked, EMarketMismatch, EZeroStake (measured cost == 0).
+/// EOracleMismatch, ENoProfileStat, EAlreadyPicked, EZeroStake (measured cost == 0), EMaxCostExceeded.
 public fun place_pick(
     league: &mut League,
     profile: &PlayerProfile,
+    predict: &mut Predict,
     manager: &mut PredictManager,
-    market: &mut ExpiryMarket,
-    config: &ProtocolConfig,
-    oracle: &MarketOracle,
-    pyth: &PythSource,
+    oracle: &OracleSVI,
     question_id: u64,
-    lower_strike: u64,
-    higher_strike: u64,
     quantity: u64,
-    leverage: u64,
+    max_cost: u64,
     stake_coin: Coin<DUSDC>,
     clock: &Clock,
     ctx: &mut TxContext,
@@ -296,13 +313,13 @@ public fun place_pick(
     assert!(object::id(manager) == profile.predict_manager, EManagerMismatch);
 
     let now = clock::timestamp_ms(clock);
-    let (direction, oracle_id) = {
+    let (direction, strike, oracle_id, expiry_ms) = {
         let q = league.questions.borrow(question_id);
         assert!(now < q.expiry_ms, EQuestionClosed);
-        (q.direction, q.oracle_id)
+        (q.direction, q.strike, q.oracle_id, q.expiry_ms)
     };
-    // Bind the market to the question's oracle: stake can only come from a position on THIS market.
-    assert!(market.market_oracle_id() == oracle_id, EMarketMismatch);
+    // Bind the passed oracle to the question's oracle: stake can only come from a position on THIS market.
+    assert!(oracle.id() == oracle_id, EOracleMismatch);
 
     let player = object::uid_to_address(&profile.id);
     assert!(league.stats.contains(player), ENoProfileStat);
@@ -311,43 +328,47 @@ public fun place_pick(
         assert!(!stat.open_picks.contains(question_id), EAlreadyPicked);
     };
 
+    // The deployed market identity. `mint` re-derives + re-checks this (assert_key_matches); we store
+    // it so settle can read `position(key)` without reconstructing.
+    let key = market_key::new(oracle_id, expiry_ms, strike, direction == DIR_UP);
+
     // Compose the real predict trade and measure the actual DUSDC cash spent.
-    let proof = manager.generate_proof_as_owner(ctx);
     manager.deposit(stake_coin, ctx);
-    let bal_before = manager.balance();
-    let order_id = market.mint(
-        manager, &proof, config, oracle, pyth,
-        lower_strike, higher_strike, quantity, leverage, clock, ctx,
-    );
+    let bal_before = manager.balance<DUSDC>();
+    // No proof/config/pyth/leverage in the deployed API; mint asserts sender==manager.owner().
+    predict::mint<DUSDC>(predict, manager, oracle, key, quantity, clock, ctx);
     // Stake = the DUSDC the mint actually CONSUMED (premium + fees), measured as the balance drop.
-    // NOT stake_coin.value(): that would book deposited-but-unspent cash the player can withdraw back
-    // = the #1 farming vector. Guard the subtraction so a no-op/crediting mint aborts cleanly.
-    let bal_after = manager.balance();
+    // NOT stake_coin.value(): that books deposited-but-unspent cash the player can withdraw back = the
+    // #1 farming vector. Guard the subtraction so a no-op/crediting mint aborts cleanly.
+    let bal_after = manager.balance<DUSDC>();
     assert!(bal_before > bal_after, EZeroStake);
     let cost = bal_before - bal_after;
+    // V11 slippage guard: ask is quoted live inside mint; abort (reverting the withdrawal) if the
+    // player paid more premium than they authorised. Risks only the caller's own funds.
+    assert!(cost <= max_cost, EMaxCostExceeded);
 
     let predict_manager = profile.predict_manager;
     let stat = league.stats.borrow_mut(player);
-    book_pick(stat, player, question_id, direction, cost, order_id, predict_manager, now);
+    book_pick(stat, player, question_id, direction, cost, key, predict_manager, now);
 }
 
 /// Accounting tail shared by the real `place_pick` and the test-only wrapper: rolls the participation
 /// streak and books the pick + events. Caller must have already run the guards (paused/expiry/
-/// already-picked) and, for the real path, the predict trade that produced `stake`/`order_id`.
+/// already-picked) and, for the real path, the predict trade that produced `stake`/`market_key`.
 fun book_pick(
     stat: &mut PlayerStat,
     player: address,
     question_id: u64,
     direction: u8,
     stake: u64,
-    order_id: u256,
+    market_key: MarketKey,
     predict_manager: ID,
     now: u64,
 ) {
     roll_streak(stat, now / MS_PER_DAY);
     stat.total_staked = stat.total_staked + stake;
     stat.open_picks.add(question_id, Pick {
-        question_id, direction, stake, order_id, predict_manager, placed_ms: now,
+        question_id, direction, stake, market_key, predict_manager, placed_ms: now,
     });
     event::emit(PickPlaced { player, question_id, direction, stake });
     event::emit(StreakUpdated { player, streak: stat.streak, best_streak: stat.best_streak });
@@ -374,17 +395,16 @@ fun roll_streak(stat: &mut PlayerStat, day: u64) {
 /// The matching `predict::redeem_permissionless` runs as a sibling PTB command (payout lands in the
 /// shared PredictManager; user withdraws later with their own withdraw_cap — custody stays trustless).
 ///
-/// #2/F8: the settlement price is read ON-CHAIN from the question's bound `MarketOracle` — a keeper
-/// can no longer feed a fake price. The market + oracle are double-bound to the question, the oracle
-/// must report `is_settled()`, and the position must still be HELD (anti early-close farming).
+/// #2/F8: the settlement price is read ON-CHAIN from the question's bound `OracleSVI` — a keeper
+/// can no longer feed a fake price. The oracle is bound to the question, must report `is_settled()`
+/// with a `settlement_price`, and the position must still be HELD (anti early-close farming).
 ///
-/// Aborts: EQuestionNotFound, ENotExpired (clock < expiry), EMarketMismatch, EOracleMismatch,
+/// Aborts: EQuestionNotFound, ENotExpired (clock < expiry), EOracleMismatch,
 /// EOracleNotSettled, ENoProfileStat, EAlreadySettled, EManagerMismatch, EPositionClosed.
 public fun settle_pick(
     league: &mut League,
     manager: &PredictManager,
-    market: &ExpiryMarket,
-    oracle: &MarketOracle,
+    oracle: &OracleSVI,
     profile_addr: address,
     question_id: u64,
     clock: &Clock,
@@ -397,11 +417,12 @@ public fun settle_pick(
         assert!(now >= q.expiry_ms, ENotExpired);
         (q.strike, q.direction, q.oracle_id)
     };
-    // Bind market + oracle to the question, then read the price ONLY from the bound, settled oracle.
-    assert!(market.market_oracle_id() == oracle_id, EMarketMismatch);
-    assert!(object::id(oracle) == market.market_oracle_id(), EOracleMismatch);
+    // Bind the oracle to the question, then read the price ONLY from the bound, settled oracle.
+    assert!(oracle.id() == oracle_id, EOracleMismatch);
     assert!(oracle.is_settled(), EOracleNotSettled);
-    let settlement_price = oracle.settlement_price();
+    let price_opt = oracle.settlement_price();
+    assert!(price_opt.is_some(), EOracleNotSettled);
+    let settlement_price = price_opt.destroy_some();
 
     assert!(league.stats.contains(profile_addr), ENoProfileStat);
     // Peek before scoring: bind manager + require position still held (anti early-close farming).
@@ -410,7 +431,9 @@ public fun settle_pick(
         assert!(stat.open_picks.contains(question_id), EAlreadySettled);
         let pick = stat.open_picks.borrow(question_id);
         assert!(object::id(manager) == pick.predict_manager, EManagerMismatch);
-        assert!(manager.has_position(market.id(), pick.order_id), EPositionClosed);
+        // position(key) > 0 is the on-chain "held to settlement" truth. See threat-model.md for the
+        // A2 third-party-redeem-grief operational boundary and the keeper ordering contract.
+        assert!(manager.position(pick.market_key) > 0, EPositionClosed);
     };
 
     book_settle(league, profile_addr, question_id, strike, direction, settlement_price);
@@ -586,10 +609,10 @@ public fun destroy_profile_for_testing(profile: PlayerProfile) {
 
 #[test_only]
 /// Exercises the accounting/streak path of `place_pick` WITHOUT the predict trade. The real
-/// `place_pick` measures `stake` from the on-chain DUSDC delta and obtains `order_id` from
-/// `market.mint`; here `stake` is supplied and `order_id` is 0. The shared `book_pick` tail and the
+/// `place_pick` measures `stake` from the on-chain DUSDC delta and obtains `market_key` from the
+/// question; here `stake` is supplied and a dummy `MarketKey` is used. The shared `book_pick` tail and the
 /// guard set are identical to production, so streak/scoring intent stays covered. The predict-coupled
-/// parts (manager/market binding, real cost, has_position) are covered by the testnet e2e (Task 6).
+/// parts (manager/market binding, real cost, position hold) are covered by the testnet e2e (Task 6).
 public fun place_pick_for_testing(
     league: &mut League,
     profile: &PlayerProfile,
@@ -615,12 +638,15 @@ public fun place_pick_for_testing(
     };
 
     let predict_manager = profile.predict_manager;
+    // Dummy market_key: the accounting/streak path under test never reads it (real binding +
+    // position hold are covered by the Task 6 testnet e2e). MarketKey is constructible in tests.
+    let key = market_key::new(object::id_from_address(@0x0), 0, 0, direction == DIR_UP);
     let stat = league.stats.borrow_mut(player);
-    book_pick(stat, player, question_id, direction, stake, 0, predict_manager, now);
+    book_pick(stat, player, question_id, direction, stake, key, predict_manager, now);
 }
 
 #[test_only]
-/// Exercises the scoring path of `settle_pick` WITHOUT reading a live `MarketOracle`. The real
+/// Exercises the scoring path of `settle_pick` WITHOUT reading a live `OracleSVI`. The real
 /// `settle_pick` reads `settlement_price` from the bound, settled oracle and requires the position be
 /// held; here the price is supplied and the predict checks are skipped. Shares the `book_settle` tail
 /// with production. Keeps the `price == 0 => EOracleNotSettled` gate so the unsettled-oracle test
