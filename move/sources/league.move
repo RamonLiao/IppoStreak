@@ -214,9 +214,14 @@ public fun publish_question(
     id
 }
 
-/// Production entry: publish a question bound to a LIVE OracleSVI. Derives `oracle_id` and
+/// Production entry: publish a question bound to an OracleSVI. Derives `oracle_id` and
 /// `expiry_ms` from the oracle itself so they can never drift from the market `mint` will check
 /// (`assert_key_matches`) — this closes the V6 expiry-misalignment footgun by construction.
+/// Liveness gate: `is_active()` (the raw `active` flag) AND `!is_settled()` — the latter rejects a
+/// SETTLED oracle that `is_active()` alone would not (red-team V1: `is_active()` is not the lifecycle
+/// status). An expired-but-unsettled oracle still passes here but is self-correcting: `place_pick`
+/// aborts `EQuestionClosed` (now >= expiry) and `mint::assert_live_oracle` rejects it — no funds at
+/// risk, just a dead question, which off-chain admin tooling avoids publishing.
 /// `strike` MUST be on the oracle's `min_strike + k*tick_size` grid; that grid is `public(package)`
 /// in predict and not readable on-chain, so strike-on-grid (V5) is validated by off-chain admin
 /// tooling reading the indexer `/oracles`. An off-grid strike is not unsafe — it makes every
@@ -229,7 +234,7 @@ public fun publish_question_for_market(
     direction: u8,
     open_ms: u64,
 ): u64 {
-    assert!(oracle.is_active(), EOracleNotActive);
+    assert!(oracle.is_active() && !oracle.is_settled(), EOracleNotActive);
     publish_question(cap, league, oracle.id(), strike, direction, open_ms, oracle.expiry())
 }
 
@@ -420,9 +425,8 @@ public fun settle_pick(
     // Bind the oracle to the question, then read the price ONLY from the bound, settled oracle.
     assert!(oracle.id() == oracle_id, EOracleMismatch);
     assert!(oracle.is_settled(), EOracleNotSettled);
-    let price_opt = oracle.settlement_price();
-    assert!(price_opt.is_some(), EOracleNotSettled);
-    let settlement_price = price_opt.destroy_some();
+    // destroy_or! aborts on None — covers a settled-flag-true-but-price-none oracle in one step.
+    let settlement_price = oracle.settlement_price().destroy_or!(abort EOracleNotSettled);
 
     assert!(league.stats.contains(profile_addr), ENoProfileStat);
     // Peek before scoring: bind manager + require position still held (anti early-close farming).
