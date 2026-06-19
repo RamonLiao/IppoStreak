@@ -1,0 +1,14 @@
+{
+  "name": "predict-league-scripts",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "e2e": "tsx m1_e2e.ts"
+  },
+  "dependencies": {
+    "@mysten/sui": "^1.30.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0"
+  }
+}
