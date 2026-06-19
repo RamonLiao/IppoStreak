@@ -176,3 +176,33 @@ PlayerStat keyed by profile object id（NOT ctx.sender()）→ permissionless se
 - grid strike 合法值（須落在 oracle min_strike + tick_size 網格；indexer 有 min_strike/tick_size）。
 - mint 的單一 u64 確認是 quantity 語意 + 最小可行下單量（min size / 保證 balance delta>0 不觸 EZeroStake）。
 - Pyth/oracle 須處於可 mint 狀態（status active）；近到期視窗下單時間。
+
+---
+
+## §M1-REVISIT IMPLEMENTED (2026-06-19)
+
+實作完成並 **testnet 端到端鏈上實證**。計畫：`docs/superpowers/plans/2026-06-19-m1-revisit-oraclesvi.md`。
+
+### 改了什麼
+- **`league.move` 重寫 CPI 對齊 deployed 單體 OracleSVI**（非 source HEAD 的 MarketOracle/ExpiryMarket）。`place_pick` 組 `predict_manager::deposit` + `predict::mint<DUSDC>`（deployed mint 無 proof/config/pyth/leverage），stake = `manager.balance<DUSDC>()` delta（#1 反 farming）。新增 `max_cost` slippage guard（`EMaxCostExceeded=22`）。
+- **`publish_question_for_market`**（新 production entry）：從 live `OracleSVI` 推導 `oracle_id`/`expiry`（V6 by-construction，不可漂移），gate `is_active() && !is_settled()`（`EOracleNotActive=23`；`!is_settled` 是 red-team V1 補強）。V5 strike-on-grid 走 off-chain（grid 是 `public(package)` 鏈上讀不到）。
+- **`create_profile_and_keep`**（新 onboarding entry）：`PlayerProfile` 是 key-only，PTB 的 TransferObjects 搬不動 → module 內 `transfer::transfer` 給 caller。**e2e 才抓到的 gap**。
+- **`settle_pick` 拿掉 hold-to-settle**（`position(key) > 0`）+ manager 綁定/param；`EPositionClosed=15→19` 退役。改純粹用 `direction` vs 鏈上 `settlement_price` 計分。
+- 退役 error：`15`(EMarketMismatch)、`19`(EPositionClosed)。新增 `22`/`23`。
+
+### 為何拿掉 hold-to-settle（關鍵發現，只有 live e2e 抓得到）
+deployed predict 跑一個 **permissionless auto-redeem keeper bot**（`0x49c56cac…`，只做 `redeem_permissionless`，34 calls/15 batched txs）。實測：oracle 結算後 **14 秒**（tx `8VdgBb…`，`PositionRedeemed`）就把我的 position 歸零，早於 settle_pick → 舊版必 abort `EPositionClosed`。`position > 0` 在這條鏈上「常態」就不可滿足，不是只有 griefing。反 farming 改靠 #1（stake=真實 cost）+ V10（`assert_live_oracle` 擋結算後 re-mint），與 hold 無關。詳 `docs/security/threat-model.md`。re-review（sui-red-team）verdict = SAFE，5 vectors 全 DEFENDED。
+
+### Dependency / publish 踩雷（sui 1.73）
+deployed predict/deepbook/dusdc @ rev `19f86eb` 是 old-style（`[addresses]=0x0`，lock 無 `[env]`）。`sui client publish` 只認「dep 自己 manifest/lock 宣告 published」的 DIRECT dep；`[dep-replacements]` 的 published-at 對 direct dep 無效（對 transitive 的 deepbook 才有效）。**解法**：vendor 三個 package 到 `move/vendor/`，各自 `Move.toml` 加 `published-at` + named address = deployed id（token/DEEP 同模式）。build 即 link 到鏈上 0xf5ea2b/0x74cd56/0xe95040。
+
+### Testnet e2e 證據（active addr 0x1509…bc4c）
+最終套件 `predict_league` = **`0xc76cfc044354aab402cfd007c866a6ba95546bd35783dc251bc28b4cd467e250`**（v1 `0x8d1340…` / upgrade `0x966cdb…` 已棄；signature 改動不可 upgrade → fresh publish）。
+- League `0x2e1cad6d…7d8a716c`、SubRegistry `0x506c64d6…40f5088b`、AdminCap `0xd94e69c1…15eddac1`、VerifierCap `0x3a38a065…ea92bb33c`、UpgradeCap `0x57fd26b8…98b2cda5`、PredictManager `0x29981867…214e634d`。
+- **place_pick**（digest `G1JQ8w…` 首輪 / fresh 輪同模式）：deposit 200 DUSDC，**stake 記 550234（真實 mint cost delta，非存入額）** → #1 鏈上實證。
+- **settle_pick**（digest `FebcGc3b…`）：position 已被 bot 歸零仍 **成功**，`won=true`（62763119653670 ≥ strike 62488000000000，UP 勝），`points=0`（stake < POINT_UNIT，sub-unit floor，符合 `red_dust_stake_zero_points`）→ 新設計（不依賴 position）鏈上驗證。
+- 負向：settle 早於 expiry → abort **code 4**（ENotExpired，tx `DD8vRA…`）；重複 settle → abort **code 5**（EAlreadySettled）→ 時間閘 + idempotency 鏈上實證。EOracleNotSettled 由 unit test 覆蓋。
+
+### 已知邊界
+- League 積分 = 「付費 pick 的方向正確性」，與 DeepBook 實際 PnL/redeem 解耦（red-team V-D5，明確產品決策）。
+- vendor/ 是 deepbookv3 @19f86eb 副本 + 手加 published-at；勿 bump source rev（會回到未部署的重構版）。
