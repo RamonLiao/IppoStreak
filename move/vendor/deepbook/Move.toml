@@ -1,0 +1,12 @@
+[package]
+name = "deepbook"
+edition = "2024.beta"
+version = "0.0.1"
+# VENDORED + marked published: latest on-chain testnet version (v19); named address = original id.
+published-at = "0x74cd5657843c627f3d80f713b71e9f895bbbeb470956d8a8e1185badf6cc77c8"
+
+[dependencies]
+token = { git = "https://github.com/MystenLabs/deepbookv3.git", subdir = "packages/token", rev = "main"}
+
+[addresses]
+deepbook = "0xfb28c4cbc6865bd1c897d26aecbe1f8792d1509a20ffec692c800660cbec6982"

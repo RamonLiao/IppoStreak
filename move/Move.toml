@@ -7,21 +7,20 @@ license = "MIT"
 # System deps (Sui, MoveStdlib) are auto-added in the new package management format.
 
 # DeepBook Predict — DEPLOYED testnet architecture (monolithic OracleSVI), NOT source HEAD.
-# rev pinned to the last predict-touching commit before the 2026-04-16 testnet deploy; the module
-# set at this commit matches deployed package 0xf5ea2b (verified: oracle/predict/market_key/
-# predict_manager + predict_math compiled in). Do NOT bump to main — main is the unreleased
-# MarketOracle/ExpiryMarket rewrite that is not on testnet.
-deepbook_predict = { git = "https://github.com/MystenLabs/deepbookv3.git", subdir = "packages/predict", rev = "19f86ebad9c6371c4f5c07229faabb2020dc691c" }
+# VENDORED from deepbookv3 @ commit 19f86eba (last predict-touching commit before the 2026-04-16
+# testnet deploy; module set matches deployed 0xf5ea2b). We vendor instead of using a git dep because
+# the packages at that rev are old-style with no `[env.testnet]` published block in their Move.lock,
+# so `sui client publish` reports them as "unpublished" (it only honors a dep's published-id from the
+# dep's OWN lock for DIRECT deps — a dep-replacement published-at is ignored for direct deps in sui
+# 1.73). The vendored copies carry a hand-added `[env.testnet]` block pointing at the deployed ids,
+# which makes the publish link against the on-chain packages (the `token`/DEEP pattern). Do NOT bump
+# the source rev — main is the unreleased MarketOracle/ExpiryMarket rewrite that is not on testnet.
+deepbook_predict = { local = "vendor/predict" }
 
 # DUSDC coin type used as the stake currency; its named address must be in scope for
 # `dusdc::dusdc::DUSDC`, so declare it directly (it is a generic type param, not linked into predict).
-dusdc = { git = "https://github.com/MystenLabs/deepbookv3.git", subdir = "packages/dusdc", rev = "19f86ebad9c6371c4f5c07229faabb2020dc691c" }
+dusdc = { local = "vendor/dusdc" }
 
-# Link against the on-chain deployed packages instead of re-publishing. published-at values verified
-# 2026-06-18 from predict (0xf5ea2b) BCS linkage table + each package's testnet object.
-# token/DEEP resolves automatically from its own [env.testnet] Move.lock — no entry needed here.
-# predict_math has NO separate published-at (compiled into 0xf5ea2b) — do NOT add it.
-[dep-replacements.testnet]
-deepbook_predict = { published-at = "0xf5ea2b3749c65d6e56507cc35388719aadb28f9cab873696a2f8687f5c785138", original-id = "0xf5ea2b3749c65d6e56507cc35388719aadb28f9cab873696a2f8687f5c785138" }
-deepbook = { git = "https://github.com/MystenLabs/deepbookv3.git", subdir = "packages/deepbook", rev = "19f86ebad9c6371c4f5c07229faabb2020dc691c", published-at = "0x74cd5657843c627f3d80f713b71e9f895bbbeb470956d8a8e1185badf6cc77c8", original-id = "0xfb28c4cbc6865bd1c897d26aecbe1f8792d1509a20ffec692c800660cbec6982" }
-dusdc = { published-at = "0xe95040085976bfd54a1a07225cd46c8a2b4e8e2b6732f140a0fc49850ba73e1a", original-id = "0xe95040085976bfd54a1a07225cd46c8a2b4e8e2b6732f140a0fc49850ba73e1a" }
+# deepbook is transitive (vendor/predict -> local ../deepbook == vendor/deepbook); its published-id
+# comes from vendor/deepbook/Move.lock [env.testnet]. token/DEEP resolves from its own git lock.
+# predict_math has NO separate published-at (compiled into 0xf5ea2b).

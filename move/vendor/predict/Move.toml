@@ -1,0 +1,12 @@
+[package]
+name = "deepbook_predict"
+edition = "2024.beta"
+version = "0.0.1"
+# VENDORED + marked published: link against deployed testnet 0xf5ea2b instead of re-publishing.
+published-at = "0xf5ea2b3749c65d6e56507cc35388719aadb28f9cab873696a2f8687f5c785138"
+
+[dependencies]
+deepbook = { local = "../deepbook" }
+
+[addresses]
+deepbook_predict = "0xf5ea2b3749c65d6e56507cc35388719aadb28f9cab873696a2f8687f5c785138"
