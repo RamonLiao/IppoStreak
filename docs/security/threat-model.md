@@ -10,31 +10,34 @@
   (`object::id(manager) == pick.predict_manager`).
 - **V11 slippage.** `place_pick(max_cost)` aborts if the live mint cost exceeds the caller's bound.
 
-## Hold-to-settle (`position(key) > 0`) — secondary product rule, best-effort
-`predict::redeem_permissionless` has NO owner check, takes the SHARED `PredictManager`, and is enabled
-once `oracle.is_settled()`. Any third party can construct the `MarketKey` and redeem any manager's
-position post-settlement. The payout still deposits to the manager owner (NO theft), but it zeroes
-`position(key)`. A griefer doing this in the window `[oracle settled, settle_pick called]` makes the
-honest `settle_pick` abort `EPositionClosed`, permanently denying that pick's league points. Griefer
-gains nothing and pays gas (spite only).
+## Hold-to-settle (`position(key) > 0`) — REMOVED after live testnet evidence
+The earlier design gated `settle_pick` on `manager.position(pick.market_key) > 0` ("held to
+settlement", anti early-close farming). **This was removed in M1-REVISIT.**
 
-**No clean on-chain fix exists** under the deployed immutable predict API. Rejected (each defeated):
-1. wrapping settle+redeem in one league function — only stops same-PTB reordering, not an independent
-   bare-redeem tx;
-2. a league-owned `forfeited` flag — player bypasses the wrapper via owner-only `predict::redeem`
-   pre-settle, reopening early-close farming;
-3. an admin re-award path — cannot distinguish a legit owner early-close from a third-party grief.
+**Why (verified on-chain, 2026-06-19):** `predict::redeem_permissionless` has NO owner check, takes
+the SHARED `PredictManager`, and is enabled the moment `oracle.is_settled()`. The deployed testnet
+predict runs a permissionless **auto-redeem keeper bot** (`0x49c56cac…`, observed doing only
+`market_key::new` + `redeem_permissionless`, 34 calls across 15 batched txs) that redeems every
+position within seconds of settlement. In our e2e the bot redeemed our position **14 seconds after
+settlement** (tx `8VdgBb…`, `PositionRedeemed`), zeroing `position(key)` BEFORE `settle_pick` could
+run, so `settle_pick` aborted `EPositionClosed`. The held-position requirement is therefore
+**unsatisfiable in the normal case**, not merely under adversarial griefing — the "first-party keeper
+settles before redeem" mitigation would have to win a <14s race against a protocol bot.
 
-### Mitigation (operational, layered)
-1. **Primary:** a first-party keeper subscribes to oracle settlement and batch-calls `settle_pick`
-   for all open picks the instant the oracle settles, BEFORE redeeming — shrinking the window toward
-   zero. A griefer must win a sub-second race for no gain.
-2. **Structural:** within the keeper PTB, `settle_pick` (reads `position > 0`) is ordered BEFORE
-   `predict::redeem_permissionless` (removes the position). The keeper never self-griefs.
-3. **Kept rule:** `position > 0` stays correct for the common case — a player who owner-redeems
-   before settlement legitimately forfeits points.
-4. **Residual (accepted boundary):** a griefer who beats the keeper can deny specific picks' points.
-   No fund risk. This is an operational boundary of the deployed predict API, not a core-defense gap.
+**Why removing it is safe:** points reward a CORRECTLY-DIRECTIONED, real (`cost > 0`) pick. Anti-farming
+does not depend on holding a position to settlement:
+- **#1** stake = the real mint-cost delta, paid (and sunk) at `place_pick` — measured live as `377631`
+  for a 200-DUSDC deposit, proving deposited-but-unspent cash is never booked.
+- **V10** `mint`'s `assert_live_oracle` forbids re-establishing a position after settlement, so a
+  redeem-then-re-mint cannot fabricate a settled-time position either.
+A redeem (by the bot, the owner, or anyone) does not change whether the pick's direction was right at
+the on-chain settlement price. `settle_pick` now scores purely on `direction` vs `settlement_price`,
+and remains idempotent (`book_settle` removes the open pick; re-settle aborts `EAlreadySettled`).
+
+Rejected alternatives (each defeated) for keeping a hold requirement: (1) wrapping settle+redeem in one
+league PTB — only stops same-PTB reordering, not the bot's independent tx; (2) a league `forfeited`
+flag — bypassable via owner-only `predict::redeem`; (3) admin re-award — cannot tell a legit early
+close from a grief. None survive the auto-redeem reality, hence removal.
 
 ## V5/V6 publish-time liveness
 - **V6 (expiry):** closed by construction — `publish_question_for_market` derives `expiry_ms` from

@@ -44,7 +44,9 @@ const ENoBadgeYet: u64 = 14;
 const EOracleMismatch: u64 = 16; // passed oracle is not this question's oracle
 const EManagerMismatch: u64 = 17; // settle manager != the pick's manager
 const EZeroStake: u64 = 18;       // measured mint cost was zero
-const EPositionClosed: u64 = 19;  // position not held to settlement (early-close farming guard)
+// 19 retired: was EPositionClosed (hold-to-settle). The deployed predict auto-redeems positions at
+// settlement, making `position > 0` unsatisfiable in the normal case; anti-farming relies on #1
+// (stake = real cost) + V10 (no post-settle re-mint) instead. See docs/security/threat-model.md.
 const EBadgeAlreadyMinted: u64 = 20; // mint_badge once-guard (#3: unlimited soulbound mint)
 const EInvalidDirection: u64 = 21;   // publish_question: direction outside {DIR_UP, DIR_DOWN}
 const EMaxCostExceeded: u64 = 22; // place_pick: live mint cost exceeded the caller's max_cost (V11 slippage guard)
@@ -418,14 +420,21 @@ fun roll_streak(stat: &mut PlayerStat, day: u64) {
 /// shared PredictManager; user withdraws later with their own withdraw_cap — custody stays trustless).
 ///
 /// #2/F8: the settlement price is read ON-CHAIN from the question's bound `OracleSVI` — a keeper
-/// can no longer feed a fake price. The oracle is bound to the question, must report `is_settled()`
-/// with a `settlement_price`, and the position must still be HELD (anti early-close farming).
+/// can no longer feed a fake price. The oracle is bound to the question and must report `is_settled()`
+/// with a `settlement_price`. Points reward a CORRECTLY-DIRECTIONED, real (cost > 0) pick; they do
+/// NOT depend on the position still being held.
+///
+/// No hold-to-settle / `position(key) > 0` check: on the deployed predict, a permissionless keeper bot
+/// auto-redeems every position within seconds of settlement (verified on-chain: redeem 14s after
+/// settlement zeroed our position before settle could run). A held-position requirement is therefore
+/// unsatisfiable in the normal case, not just under griefing. Anti-farming does not rely on it — it
+/// rests on #1 (stake = the real mint-cost delta, paid at `place_pick`) and V10 (`mint`'s
+/// `assert_live_oracle` forbids re-establishing a position after settlement). See threat-model.md.
 ///
 /// Aborts: EQuestionNotFound, ENotExpired (clock < expiry), EOracleMismatch,
-/// EOracleNotSettled, ENoProfileStat, EAlreadySettled, EManagerMismatch, EPositionClosed.
+/// EOracleNotSettled, ENoProfileStat, EAlreadySettled.
 public fun settle_pick(
     league: &mut League,
-    manager: &PredictManager,
     oracle: &OracleSVI,
     profile_addr: address,
     question_id: u64,
@@ -445,18 +454,8 @@ public fun settle_pick(
     // destroy_or! aborts on None — covers a settled-flag-true-but-price-none oracle in one step.
     let settlement_price = oracle.settlement_price().destroy_or!(abort EOracleNotSettled);
 
-    assert!(league.stats.contains(profile_addr), ENoProfileStat);
-    // Peek before scoring: bind manager + require position still held (anti early-close farming).
-    {
-        let stat = league.stats.borrow(profile_addr);
-        assert!(stat.open_picks.contains(question_id), EAlreadySettled);
-        let pick = stat.open_picks.borrow(question_id);
-        assert!(object::id(manager) == pick.predict_manager, EManagerMismatch);
-        // position(key) > 0 is the on-chain "held to settlement" truth. See threat-model.md for the
-        // A2 third-party-redeem-grief operational boundary and the keeper ordering contract.
-        assert!(manager.position(pick.market_key) > 0, EPositionClosed);
-    };
-
+    // book_settle removes the open pick (idempotency: re-settle aborts EAlreadySettled) and scores
+    // direction vs the on-chain settlement price.
     book_settle(league, profile_addr, question_id, strike, direction, settlement_price);
 }
 

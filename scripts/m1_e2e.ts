@@ -34,14 +34,18 @@ async function exec(tx: Transaction, label: string) {
 async function pickOracle() {
   const all = await (await fetch(IDX)).json();
   const now = Date.now();
+  // Indexer schema (verified live 2026-06-19): status:"active" (NOT active:true), settlement_price
+  // null until settled, and NO spot field in the list — read spot from the on-chain oracle object.
   const live = all.filter((o: any) =>
-    o.underlying_asset?.includes('BTC') && o.active === true &&
-    o.settlement_price == null && Number(o.expiry) > now + 90_000);
+    o.underlying_asset === 'BTC' && o.status === 'active' &&
+    o.settlement_price == null && Number(o.expiry) > now + 120_000);
   live.sort((a: any, b: any) => Number(a.expiry) - Number(b.expiry));
   if (!live.length) throw new Error('no near-expiry active BTC oracle');
   const o = live[0];
-  // on-grid at-the-money strike
-  const minStrike = BigInt(o.min_strike), tick = BigInt(o.tick_size), spot = BigInt(o.prices.spot);
+  // on-grid at-the-money strike; spot comes from the oracle object's prices.spot.
+  const obj = await client.getObject({ id: o.oracle_id, options: { showContent: true } });
+  const spot = BigInt((obj.data?.content as any).fields.prices.fields.spot);
+  const minStrike = BigInt(o.min_strike), tick = BigInt(o.tick_size);
   const k = (spot - minStrike) / tick;
   const strike = minStrike + k * tick;
   return { id: o.oracle_id, expiry: BigInt(o.expiry), strike, asset: o.underlying_asset };
@@ -60,14 +64,14 @@ async function main() {
   ) as any;
   const MANAGER = manager.objectId;
 
-  // 2) create_profile (VerifierCap-gated, binds predict_manager).
+  // 2) create_profile_and_keep (VerifierCap-gated, binds predict_manager, transfers profile to me).
+  //    PlayerProfile is key-only, so the module-internal transfer is required (a PTB cannot move it).
   tx = new Transaction();
-  const profile = tx.moveCall({
-    target: `${PKG}::league::create_profile`,
+  tx.moveCall({
+    target: `${PKG}::league::create_profile_and_keep`,
     arguments: [tx.object(VERIFIER), tx.object(SUB_REGISTRY), tx.object(LEAGUE),
       tx.pure.vector('u8', [...Buffer.from('e2e-sub')]), tx.pure.id(MANAGER), tx.object(CLOCK)],
   });
-  tx.transferObjects([profile], me);
   const pr = await exec(tx, 'create_profile');
   const PROFILE = (pr.objectChanges!.find(
     (c: any) => c.type === 'created' && c.objectType.endsWith('::league::PlayerProfile')) as any).objectId;
@@ -111,24 +115,17 @@ async function main() {
   }
   if (!settled) throw new Error('oracle did not settle in time');
 
-  // 6) KEEPER path: settle_pick BEFORE redeem_permissionless, in one PTB.
+  // 6) settle_pick — permissionless, scores direction vs the on-chain settlement price. No
+  //    position-hold check and no manager arg: the deployed predict auto-redeems positions within
+  //    seconds of settlement (see docs/security/threat-model.md), so settle no longer depends on the
+  //    position still existing. Redeem (by the bot or the owner) is orthogonal to scoring.
   tx = new Transaction();
   tx.moveCall({
     target: `${PKG}::league::settle_pick`,
-    arguments: [tx.object(LEAGUE), tx.object(MANAGER), tx.object(o.id),
+    arguments: [tx.object(LEAGUE), tx.object(o.id),
       tx.pure.address(PROFILE_ADDR), tx.pure.u64(QID), tx.object(CLOCK)],
   });
-  // sibling redeem (key reconstructed: is_up = direction 0). market_key::new(oracle_id, expiry, strike, true)
-  const key = tx.moveCall({
-    target: `${PREDICT}::market_key::new`,
-    arguments: [tx.pure.id(o.id), tx.pure.u64(o.expiry), tx.pure.u64(o.strike), tx.pure.bool(true)],
-  });
-  tx.moveCall({
-    target: `${PREDICT}::predict::redeem_permissionless`, typeArguments: [DUSDC],
-    arguments: [tx.object(PREDICT_SINGLETON), tx.object(MANAGER), tx.object(o.id), key,
-      tx.pure.u64(0) /*min payout*/, tx.object(CLOCK)],
-  });
-  const sr = await exec(tx, 'settle_pick (keeper, before redeem)');
+  const sr = await exec(tx, 'settle_pick');
   const settledEv = (sr.events!.find((e: any) => e.type.endsWith('::PickSettled')) as any).parsedJson;
   console.log('  won =', settledEv.won, 'points =', settledEv.points_awarded);
 
