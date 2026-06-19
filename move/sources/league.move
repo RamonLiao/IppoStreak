@@ -275,6 +275,23 @@ public fun create_profile(
     }
 }
 
+/// Onboarding entry: create a profile and deliver it to the caller. `PlayerProfile` is `key`-only
+/// (soulbound to its derived address), so a PTB cannot move the value `create_profile` returns via
+/// the generic TransferObjects command — this wrapper transfers it inside the module. This is the
+/// production onboarding call; `create_profile` stays public for composition/tests.
+public entry fun create_profile_and_keep(
+    v: &VerifierCap,
+    reg: &mut SubRegistry,
+    league: &mut League,
+    sub_commit: vector<u8>,
+    predict_manager: ID,
+    clock: &Clock,
+    ctx: &mut TxContext,
+) {
+    let profile = create_profile(v, reg, league, sub_commit, predict_manager, clock, ctx);
+    transfer::transfer(profile, ctx.sender());
+}
+
 fun new_stat(ctx: &mut TxContext): PlayerStat {
     PlayerStat {
         streak: 0,
