@@ -206,3 +206,21 @@ deployed predict/deepbook/dusdc @ rev `19f86eb` 是 old-style（`[addresses]=0x0
 ### 已知邊界
 - League 積分 = 「付費 pick 的方向正確性」，與 DeepBook 實際 PnL/redeem 解耦（red-team V-D5，明確產品決策）。
 - vendor/ 是 deepbookv3 @19f86eb 副本 + 手加 published-at；勿 bump source rev（會回到未部署的重構版）。
+
+## §P1-Task1 — `create_profile_open`（ungated zkLogin onboarding，2026-06-20）
+為前端 zkLogin dApp 新增 ungated 開戶入口（用戶無法引用 admin-owned `VerifierCap`）。gated `create_profile`/`create_profile_and_keep` 保留給 D5 verified 路徑。
+
+### 新簽名（前端 PTB builder 必讀）
+`public entry create_profile_open(reg: &mut SubRegistry, league: &mut League, predict_manager: ID, clock: &Clock, ctx)`
+- **無 `sub_commit` 參數**：dedup key 鏈上由 `sui::address::to_bytes(ctx.sender())` 衍生。zkLogin 下 sender 即 OAuth 衍生地址 → 「一地址一 profile」上鏈強制。
+- transfer profile 給 `ctx.sender()`；stats keyed by profile object address（與 gated 路徑一致，permissionless settle 相容）。
+
+### Review 三關 verdict（HIGH-1/V1 修正後）
+- **move-code-quality**：0 critical。`public entry` + `object::` 非 method syntax = 沿用既有慣例（Rule 11），~10 行複製 create_profile 為刻意（避免動 reviewed gated fn）。
+- **sui-security-guard + sui-red-team（獨立收斂同一根因）**：原版 `sub_commit` caller-controlled、`owner_sub_commit` 是 write-only dead state → HIGH-1（sybil gate (a) 失效）/ V1（squatting DoS：griefer 預登記受害者地址 bytes 把人永久鎖死）。**修法**：derive key from `ctx.sender()` + 砍參數（同時關掉 V3 huge-vector）。+ MED-1 補 `assert!(!league.paused, EPaused)`。V2 unbounded growth / V4 keying / V3 = DEFENDED。
+- **回歸測試**：`test_create_profile_open_dedup_aborts`（同 sender 重複 → ESubAlreadyRegistered）+ `test_create_profile_open_distinct_senders_independent`（不同 sender 各自獨立 = V1 防禦的 teeth）。25/25 PASS。
+
+### 接受的殘餘風險
+- 一人多 OAuth 身份 → 多地址 → 多 profile：靠 stake-weighted scoring 中和（文件既有決策）。
+- MED-2 registry 無限增長：每地址一行 = onboarding 本質，gas friction + pause 拉桿足夠（testnet demo 不加押金，Rule 2）。
+- LOW-1 `ProfileCreated` event 未帶 sender：延後（動共用 event struct，cosmetic）。

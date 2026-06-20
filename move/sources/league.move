@@ -9,8 +9,10 @@
 /// the MEASURED DUSDC cash delta as stake (#1: stake cannot be faked — it is the at-risk cash, not an
 /// unbacked number). `settle_pick` reads `settlement_price` ON-CHAIN from the question's bound,
 /// settled `OracleSVI` (#2/F8 CLOSED: a permissionless keeper can no longer feed a fake price) and
-/// requires `position(MarketKey) > 0` (held to settlement, anti early-close farming). Custody stays
-/// trustless: funds live in the shared `PredictManager`; the user withdraws later with their own cap.
+/// scores purely on `direction` vs the on-chain `settlement_price`. No hold-to-settle / `position > 0`
+/// check: the deployed predict auto-redeems positions seconds after settlement, so anti-farming rests
+/// on #1 (stake = real mint cost) + V10 (no post-settle re-mint) instead — see docs/security/threat-model.md.
+/// Custody stays trustless: funds live in the shared `PredictManager`; the user withdraws later with their own cap.
 module predict_league::league;
 
 use sui::clock::{Self, Clock};
@@ -292,6 +294,47 @@ public entry fun create_profile_and_keep(
 ) {
     let profile = create_profile(v, reg, league, sub_commit, predict_manager, clock, ctx);
     transfer::transfer(profile, ctx.sender());
+}
+
+/// Open onboarding entry (frontend self-serve): create a profile WITHOUT a `VerifierCap` and
+/// deliver it to the caller. Used by the zkLogin dApp where the user cannot reference the
+/// admin-owned `VerifierCap`. The dedup commit is DERIVED ON-CHAIN from `ctx.sender()` (under
+/// zkLogin the sender IS the OAuth-derived address), NOT taken from caller input — so the
+/// "one profile per derived address" gate is unforgeable: a griefer cannot squat a victim's
+/// address slot, and a single address cannot mint multiple profiles. Residual sybil (one
+/// person, many OAuth identities → many addresses) is neutralized by stake-weighted scoring
+/// (points require real at-risk DUSDC). The gated `create_profile`/`create_profile_and_keep`
+/// keep their caller-supplied `sub_commit` (the `VerifierCap` is the attestation there).
+public entry fun create_profile_open(
+    reg: &mut SubRegistry,
+    league: &mut League,
+    predict_manager: ID,
+    clock: &Clock,
+    ctx: &mut TxContext,
+) {
+    assert!(!league.paused, EPaused);
+    // Bind the dedup key to the caller — caller-supplied bytes would let anyone squat any
+    // address's slot or mint unlimited profiles (the registry would no longer mean anything).
+    let sub_commit = sui::address::to_bytes(ctx.sender());
+    assert!(!reg.used.contains(sub_commit), ESubAlreadyRegistered);
+    let uid = object::new(ctx);
+    let profile_addr = object::uid_to_address(&uid);
+    reg.used.add(sub_commit, profile_addr);
+
+    if (!league.stats.contains(profile_addr)) {
+        league.stats.add(profile_addr, new_stat(ctx));
+    };
+
+    event::emit(ProfileCreated { profile: profile_addr, predict_manager });
+    transfer::transfer(
+        PlayerProfile {
+            id: uid,
+            owner_sub_commit: sub_commit,
+            predict_manager,
+            created_ms: clock::timestamp_ms(clock),
+        },
+        ctx.sender(),
+    );
 }
 
 fun new_stat(ctx: &mut TxContext): PlayerStat {

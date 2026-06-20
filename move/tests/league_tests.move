@@ -262,6 +262,71 @@ fun test_sub_uniqueness_aborts() {
     ts::end(sc);
 }
 
+// ===== Open onboarding (frontend self-serve, no VerifierCap) =====
+
+#[test]
+fun test_create_profile_open_registers_and_transfers() {
+    let mut sc = begin();
+    ts::next_tx(&mut sc, ADMIN);
+    let mut league = ts::take_shared<League>(&sc);
+    let mut reg = ts::take_shared<SubRegistry>(&sc);
+    let clock = clock::create_for_testing(ts::ctx(&mut sc));
+
+    league::create_profile_open(&mut reg, &mut league, dummy_oracle(), &clock, ts::ctx(&mut sc));
+
+    clock::destroy_for_testing(clock);
+    ts::return_shared(reg);
+    ts::return_shared(league);
+    // Profile was transferred to sender; confirm it is now owned by ADMIN.
+    ts::next_tx(&mut sc, ADMIN);
+    let profile = ts::take_from_sender<league::PlayerProfile>(&sc);
+    ts::return_to_sender(&sc, profile);
+    ts::end(sc);
+}
+
+// Same caller cannot mint a second profile: the dedup key is derived from ctx.sender(),
+// so a repeat call from the same address hits ESubAlreadyRegistered. This is the on-chain
+// teeth behind "one profile per derived address" — it would NOT fail if the commit were
+// caller-supplied bytes (the HIGH-1/V1 regression guard).
+#[test]
+#[expected_failure(abort_code = ::predict_league::league::ESubAlreadyRegistered)]
+fun test_create_profile_open_dedup_aborts() {
+    let mut sc = begin();
+    ts::next_tx(&mut sc, ADMIN);
+    let mut league = ts::take_shared<League>(&sc);
+    let mut reg = ts::take_shared<SubRegistry>(&sc);
+    let clock = clock::create_for_testing(ts::ctx(&mut sc));
+
+    league::create_profile_open(&mut reg, &mut league, dummy_oracle(), &clock, ts::ctx(&mut sc));
+    league::create_profile_open(&mut reg, &mut league, dummy_oracle(), &clock, ts::ctx(&mut sc)); // aborts
+
+    clock::destroy_for_testing(clock);
+    ts::return_shared(reg);
+    ts::return_shared(league);
+    ts::end(sc);
+}
+
+// Distinct senders each get their own slot — a griefer CANNOT pre-squat another address's
+// onboarding, because the dedup key is the caller's own address, not attacker-supplied bytes.
+// Directly encodes the V1 squatting defense: this passes only because each sender keys itself.
+#[test]
+fun test_create_profile_open_distinct_senders_independent() {
+    let mut sc = begin();
+    ts::next_tx(&mut sc, ADMIN);
+    let mut league = ts::take_shared<League>(&sc);
+    let mut reg = ts::take_shared<SubRegistry>(&sc);
+    let clock = clock::create_for_testing(ts::ctx(&mut sc));
+    league::create_profile_open(&mut reg, &mut league, dummy_oracle(), &clock, ts::ctx(&mut sc)); // ADMIN
+
+    ts::next_tx(&mut sc, @0xB);
+    league::create_profile_open(&mut reg, &mut league, dummy_oracle(), &clock, ts::ctx(&mut sc)); // 0xB: independent slot
+
+    clock::destroy_for_testing(clock);
+    ts::return_shared(reg);
+    ts::return_shared(league);
+    ts::end(sc);
+}
+
 // ===== Team fee bound =====
 
 #[test]
