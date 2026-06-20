@@ -41,8 +41,14 @@ the `&VerifierCap` parameter, transferring the new `PlayerProfile` to `ctx.sende
 referenced by a tx its owner signs, so a pure client-side zkLogin user cannot use the
 gated path. `create_profile`/`create_profile_and_keep` stay (D5 upgrade path).
 
-Sybil resistance retained via `SubRegistry.used` dedup on `sub_commit`. Frontend sets
-`sub_commit = zkLogin address bytes` → one profile per Google-derived address.
+Sybil resistance: `SubRegistry.used` dedups `sub_commit` (frontend sets
+`sub_commit = zkLogin address bytes` → one profile per Google-derived address). Note
+this per-address dedup does NOT stop multi-account sybil (Google accounts are free →
+N addresses → N profiles). That is acceptable because the **core anti-sybil is
+economic**: the leaderboard is stake-weighted (points bind to real at-risk DUSDC, design
+#1), so a fake account earns nothing without staking real money. VerifierCap was a
+belt-and-suspenders gate against non-linear rewards; dropping it on testnet demo is
+acceptable. `create_profile`/`create_profile_and_keep` stay for the D5 verified path.
 (If Enoki exposes the raw JWT, prefer `sub_commit = hash(iss|sub|aud)`; decided at
 implementation.)
 
@@ -72,8 +78,12 @@ sui-red-team) and `sui move test`. Then republish/upgrade the package; record ne
   (on-chain authoritative).
 - **Badges**: `getOwnedObjects(owner, type=Badge)`.
 - **Teams**: `TeamCreated` events + `getObject`.
-- Transport: dapp-kit JSON-RPC (proven on testnet by e2e 2026-06). GraphQL is a fallback,
-  not built first.
+- Transport: dapp-kit JSON-RPC. **RISK (A2):** SUI roadmap marks JSON-RPC removal
+  ~April 2026; e2e proved testnet reads still served as of 2026-06, but this is a
+  load-bearing, demo-killer assumption (dapp-kit's default `SuiClient` is JSON-RPC). P1
+  task #1 is to re-verify testnet JSON-RPC reads still work; if not, route all reads
+  through GraphQL beta immediately. (Echoes the 06-19 lesson: verify deployed runtime
+  behavior, not just ABI.)
 
 ## Screens by phase
 
@@ -88,7 +98,17 @@ sui-red-team) and `sui move test`. Then republish/upgrade the package; record ne
 `lib/ptb.ts`: one function per entry, all executed via Enoki sponsored execution.
 `settle_pick` is permissionless → frontend exposes a "settle" trigger (anyone can call).
 Admin page uses a separate standard wallet-connect path (AdminCap must not live on a
-social-login address).
+social-login address). **Operational prereq (A6):** the publisher key `0x1509…bc4c`
+(holds `LeagueAdminCap`) must be imported into a browser wallet to drive the admin page.
+
+Implementation-time verifications (from architecture review): (A3) measure real gas on
+the first testnet `place_pick` — it touches 4 shared objects + deposit/mint CPI — and
+confirm it fits the Enoki sponsor policy/budget (adjust move-call allowlist + budget in
+the Enoki portal if it exceeds). (A4) confirm `create_manager` output (shared vs owned,
+owner field = sender) to decide 1 vs 2 onboarding PTBs. (A5) leaderboard read =
+`getObject(League)` → `stats.fields.id.id` (Table UID) → paginated `getDynamicFields`,
+cached via react-query. (A7, optional P2) register Display V2 (registry `0xd`) for Badge
+so it renders in wallets.
 
 PTB shapes mirror `scripts/m1_e2e.ts` argument order exactly.
 
