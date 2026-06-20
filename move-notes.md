@@ -210,6 +210,12 @@ deployed predict/deepbook/dusdc @ rev `19f86eb` 是 old-style（`[addresses]=0x0
 ## §P1-Task1 — `create_profile_open`（ungated zkLogin onboarding，2026-06-20）
 為前端 zkLogin dApp 新增 ungated 開戶入口（用戶無法引用 admin-owned `VerifierCap`）。gated `create_profile`/`create_profile_and_keep` 保留給 D5 verified 路徑。
 
+### 部署（2026-06-20 upgrade，compatible additive）
+- **新 package id (v2) = `0x70dce2dc9a4fbc2beb4c1047ecb3deb400bc068d0670a5bb29b8c22a9751e254`**（modules badge/league，gas 0.066 SUI）。
+- **前端 call target 用新 pkg id `0x70dce2…`**；但**型別身份仍綁原始 `0xc76cfc04…`**（Sui upgrade 規則：struct type address = 原始發布包）。League/SubRegistry/AdminCap/VerifierCap/UpgradeCap/PredictManager 全部不變（見 §M1-REVISIT IMPLEMENTED）。
+- UpgradeCap `0x57fd26b8…` version bump，仍可再升。
+- 鏈上驗證：`sui_getNormalizedMoveFunction(0x70dce2…, league, create_profile_open)` = Public entry, params (SubRegistry, League, ID, Clock, TxContext)，無 sub_commit。
+
 ### 新簽名（前端 PTB builder 必讀）
 `public entry create_profile_open(reg: &mut SubRegistry, league: &mut League, predict_manager: ID, clock: &Clock, ctx)`
 - **無 `sub_commit` 參數**：dedup key 鏈上由 `sui::address::to_bytes(ctx.sender())` 衍生。zkLogin 下 sender 即 OAuth 衍生地址 → 「一地址一 profile」上鏈強制。
