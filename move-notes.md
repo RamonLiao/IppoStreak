@@ -220,6 +220,11 @@ deployed predict/deepbook/dusdc @ rev `19f86eb` 是 old-style（`[addresses]=0x0
 - **sui-security-guard + sui-red-team（獨立收斂同一根因）**：原版 `sub_commit` caller-controlled、`owner_sub_commit` 是 write-only dead state → HIGH-1（sybil gate (a) 失效）/ V1（squatting DoS：griefer 預登記受害者地址 bytes 把人永久鎖死）。**修法**：derive key from `ctx.sender()` + 砍參數（同時關掉 V3 huge-vector）。+ MED-1 補 `assert!(!league.paused, EPaused)`。V2 unbounded growth / V4 keying / V3 = DEFENDED。
 - **回歸測試**：`test_create_profile_open_dedup_aborts`（同 sender 重複 → ESubAlreadyRegistered）+ `test_create_profile_open_distinct_senders_independent`（不同 sender 各自獨立 = V1 防禦的 teeth）。25/25 PASS。
 
+### Re-review fixed 版（upgrade 前，2 reviewer 重審修正後碼）
+- **security-guard**：CLEAN，HIGH/MED/LOW 全 0。確認 sender-derived key 關閉 multi-mint + squat。
+- **red-team**：V1/V2 DEFENDED（測試證實）；**V3 EXPLOITABLE（low，需 VerifierCap）= cross-path keyspace collision** → gated `create_profile` 仍吃 raw bytes、與 open path 共用 `reg.used`，admin 能用 `to_bytes(victim)` 鎖死受害者 open onboarding。**已修**：open path key 加 trailing `0x01` domain tag（33 bytes），與 gated 32-byte hash 永不相撞（by construction，非對稱修法不碰 gated reviewed fn）。25/25 PASS。
+- **V4（前端驗證項，非合約問題）**：「一地址一 profile」依賴 `ctx.sender()` = 用戶 zkLogin 地址而非 sponsor/relayer。Sui sponsored tx：sponsor 只付 gas（分離 gas-owner 簽章），`tx.sender` 仍是用戶 → 成立。**但 P1 Task 2/4 整合測試必須斷言**：executed tx 的 sender == 用戶 zkLogin 地址，絕不可是 backend 共用 key（否則所有用戶撞 relayer 單一地址 → 全域只能有一個 profile = global DoS）。
+
 ### 接受的殘餘風險
 - 一人多 OAuth 身份 → 多地址 → 多 profile：靠 stake-weighted scoring 中和（文件既有決策）。
 - MED-2 registry 無限增長：每地址一行 = onboarding 本質，gas friction + pause 拉桿足夠（testnet demo 不加押金，Rule 2）。

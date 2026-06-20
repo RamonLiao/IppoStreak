@@ -315,7 +315,11 @@ public entry fun create_profile_open(
     assert!(!league.paused, EPaused);
     // Bind the dedup key to the caller — caller-supplied bytes would let anyone squat any
     // address's slot or mint unlimited profiles (the registry would no longer mean anything).
-    let sub_commit = sui::address::to_bytes(ctx.sender());
+    // Domain-tag with a trailing 0x01 so an open-path key (33 bytes) can never collide with a
+    // gated `create_profile` sub_commit (a 32-byte OAuth-attestation hash) in the shared
+    // `reg.used` table — the two keyspaces are disjoint by construction.
+    let mut sub_commit = sui::address::to_bytes(ctx.sender());
+    sub_commit.push_back(0x01);
     assert!(!reg.used.contains(sub_commit), ESubAlreadyRegistered);
     let uid = object::new(ctx);
     let profile_addr = object::uid_to_address(&uid);
