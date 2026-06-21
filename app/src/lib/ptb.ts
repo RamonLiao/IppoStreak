@@ -75,3 +75,31 @@ export function buildPlacePick(p: {
   });
   return tx;
 }
+
+// settle_pick PTB (verified against the deployed source signature, league.move):
+//   (&mut League, &OracleSVI, profile_addr: address, question_id: u64, &Clock)
+// Permissionless: anyone can settle any pick (the user settles their own here). It scores the
+// pick's direction against the oracle's on-chain settlement price, awards stake-weighted points,
+// and removes the open pick (re-settle aborts EAlreadySettled). Aborts ENotExpired / EOracleNotSettled
+// until the oracle has actually resolved — surfaced to the user via errors.toMessage.
+//
+// `oracleId` comes from the pick's own market_key (read in fetchMyState) — it MUST match the oracle
+// the question is bound to (EOracleMismatch otherwise), so we never let the caller guess it.
+export function buildSettlePick(p: {
+  oracleId: string;
+  profileAddr: string;
+  questionId: bigint | string;
+}): Transaction {
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${PKG}::league::settle_pick`,
+    arguments: [
+      tx.object(LEAGUE),
+      tx.object(p.oracleId),
+      tx.pure.address(p.profileAddr),
+      tx.pure.u64(p.questionId),
+      tx.object(CLOCK),
+    ],
+  });
+  return tx;
+}

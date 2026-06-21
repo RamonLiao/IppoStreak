@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Login from './pages/Login';
 import Markets from './pages/Markets';
 import Pick from './pages/Pick';
+import MyPicks from './pages/MyPicks';
 import type { Market } from './lib/reads';
 import type { Profile } from './hooks/useProfile';
 import { useProfile } from './hooks/useProfile';
@@ -42,6 +43,7 @@ function Gate() {
 function Home({ profile, unfunded }: { profile: Profile; unfunded: boolean }) {
   const qc = useQueryClient();
   const [picking, setPicking] = useState<Market | null>(null);
+  const [view, setView] = useState<'markets' | 'mypicks'>('markets');
 
   if (picking) {
     return (
@@ -51,18 +53,21 @@ function Home({ profile, unfunded }: { profile: Profile; unfunded: boolean }) {
         managerId={profile.managerId}
         onBack={() => setPicking(null)}
         onDone={() => {
-          // Pick spent DUSDC — refresh the balance banner and (Task 6) any picks view.
+          // Pick spent DUSDC and added an open pick — refresh the banner + MyPicks, then land on
+          // MyPicks so the player immediately sees the position they just opened.
           qc.invalidateQueries({ queryKey: ['dusdc'] });
+          qc.invalidateQueries({ queryKey: ['my-state'] });
           setPicking(null);
+          setView('mypicks');
         }}
       />
     );
   }
 
   // Funding is shown as a non-blocking banner, NOT a full-screen gate: an onboarded user must
-  // always reach Markets (and, in Task 6, MyPicks/settle) even at 0 balance — otherwise spending
-  // all DUSDC on a pick would lock them out of their open positions. The "needs funds" hard stop
-  // belongs to the pick action (Pick.tsx), not the whole app. Banner shows only on a CONFIRMED zero.
+  // always reach Markets (and MyPicks/settle) even at 0 balance — otherwise spending all DUSDC on
+  // a pick would lock them out of their open positions. The "needs funds" hard stop belongs to the
+  // pick action (Pick.tsx), not the whole app. Banner shows only on a CONFIRMED zero.
   return (
     <>
       {unfunded && (
@@ -71,7 +76,25 @@ function Home({ profile, unfunded }: { profile: Profile; unfunded: boolean }) {
           a pick. Refreshes automatically.
         </div>
       )}
-      <Markets onPick={setPicking} />
+      <nav className="flex gap-4 px-6 py-3 border-b text-sm">
+        <button
+          onClick={() => setView('markets')}
+          className={view === 'markets' ? 'font-semibold' : 'text-gray-500 hover:underline'}
+        >
+          Markets
+        </button>
+        <button
+          onClick={() => setView('mypicks')}
+          className={view === 'mypicks' ? 'font-semibold' : 'text-gray-500 hover:underline'}
+        >
+          My Picks
+        </button>
+      </nav>
+      {view === 'markets' ? (
+        <Markets onPick={setPicking} />
+      ) : (
+        <MyPicks profileId={profile.profileId} onBack={() => setView('markets')} />
+      )}
     </>
   );
 }
