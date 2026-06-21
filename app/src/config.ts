@@ -4,7 +4,11 @@
 // original id as a call target.
 export const NETWORK = 'testnet' as const;
 
-export const PKG = import.meta.env.VITE_PKG; // new v2 pkg id (Task 1 upgrade)
+export const PKG = import.meta.env.VITE_PKG; // new v2 pkg id (Task 1 upgrade) — PTB call target
+// Original publish id = the STRUCT TYPE identity. Sui upgrades preserve type identity, so
+// on-chain object types (e.g. PlayerProfile) always serialize with THIS id, not the v2 PKG.
+// Use for owned-object `type` filters / parsing object types — never as a call target.
+export const PKG_TYPE = '0xc76cfc044354aab402cfd007c866a6ba95546bd35783dc251bc28b4cd467e250';
 export const LEAGUE = import.meta.env.VITE_LEAGUE; // shared, unchanged across upgrade
 export const SUB_REGISTRY = import.meta.env.VITE_SUB_REGISTRY; // shared, unchanged across upgrade
 
