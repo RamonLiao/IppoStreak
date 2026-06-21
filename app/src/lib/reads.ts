@@ -8,7 +8,9 @@
 // The SDK warns the `json` shape can differ across API impls, so `readField` tolerates both
 // the flat and the `.fields`-wrapped layouts.
 import type { SuiGrpcClient } from '@mysten/sui/grpc';
-import { INDEXER } from '../config';
+import { bcs } from '@mysten/sui/bcs';
+import { normalizeSuiAddress } from '@mysten/sui/utils';
+import { INDEXER, LEAGUE } from '../config';
 
 export type Market = {
   oracleId: string;
@@ -82,4 +84,100 @@ export async function fetchMarkets(client: SuiGrpcClient): Promise<Market[]> {
     });
   }
   return out;
+}
+
+// `Question` as stored in `League.questions: Table<u64, Question>`. Field order MUST match the
+// Move struct in league.move exactly (BCS is positional). `oracle_id: ID` serialises as a bare
+// 32-byte address. Verified by decoding the live table entry against the deployed chain.
+// Minimal projection of listDynamicFields(value:true) — only the fields findOpenQuestion reads.
+type DynFieldPage = {
+  dynamicFields: { name: { bcs: Uint8Array }; value?: { bcs: Uint8Array } }[];
+  hasNextPage: boolean;
+  cursor: string | null;
+};
+
+const QuestionBcs = bcs.struct('Question', {
+  id: bcs.u64(),
+  oracle_id: bcs.Address,
+  strike: bcs.u64(),
+  direction: bcs.u8(),
+  open_ms: bcs.u64(),
+  expiry_ms: bcs.u64(),
+  settled: bcs.bool(),
+});
+
+export type OpenQuestion = {
+  questionId: string; // u64
+  direction: number; // 0 = UP, 1 = DOWN (mirrors DIR_UP/DIR_DOWN)
+  strike: bigint; // 9-implied-decimals, same scale as oracle spot
+};
+
+// Find a published, still-open question bound to `oracleId`. There is NO event-query API on the
+// gRPC core client (the JSON-RPC `queryEvents` the P1 plan assumed does not exist on Path B), so
+// we read the source of truth directly: enumerate `League.questions` dynamic fields and BCS-decode
+// each `Question` value. Returns the question's id + the ON-CHAIN direction/strike (so the UI
+// shows what `place_pick` will actually bind to — never a guessed/hardcoded side), or null.
+//
+// `place_pick` is AdminCap-gated to publish; the demo operator publishes a fresh question per
+// market (Pick page shows "no open question yet" when this returns null). We skip settled and
+// already-expired questions so a stale resolved question never gets offered as pickable.
+//
+// `expiryMs` (the market's oracle expiry) is matched as defense-in-depth — an OracleSVI is unique
+// per expiry window, so oracle-match already implies it, but the assertion guards against a reused
+// id. P1 LIMITATION: the contract allows multiple unsettled questions per oracle (e.g. UP + DOWN);
+// we return the FIRST match. The demo operator publishes exactly one question per market, so this
+// is unambiguous in P1; a market that offers both sides needs a selection UI (P2).
+export async function findOpenQuestion(
+  client: SuiGrpcClient,
+  oracleId: string,
+  expiryMs?: bigint,
+): Promise<OpenQuestion | null> {
+  const { object } = await client.core.getObject({ objectId: LEAGUE, include: { json: true } });
+  const tableId = readField(readField(object.json, 'questions'), 'id') as string | undefined;
+  if (!tableId) return null;
+
+  const now = Date.now();
+  const want = normalizeSuiAddress(oracleId);
+  let cursor: string | null = null;
+  for (;;) {
+    // Explicit shape: threading `cursor` (read back from the result) into the call confuses
+    // TS's generic inference into a self-reference, so we pin the result type to the fields used.
+    const page: DynFieldPage = await client.listDynamicFields({
+      parentId: tableId,
+      include: { value: true },
+      cursor,
+    });
+    for (const f of page.dynamicFields) {
+      if (!f.value) continue;
+      const q = QuestionBcs.parse(f.value.bcs);
+      if (q.settled) continue;
+      if (Number(q.expiry_ms) <= now) continue;
+      if (normalizeSuiAddress(q.oracle_id) !== want) continue;
+      if (expiryMs != null && BigInt(q.expiry_ms) !== expiryMs) continue;
+      return { questionId: bcs.u64().parse(f.name.bcs), direction: q.direction, strike: BigInt(q.strike) };
+    }
+    if (!page.hasNextPage) return null;
+    cursor = page.cursor;
+  }
+}
+
+// All of an owner's DUSDC coins, following pagination. listCoins returns one page (~50); a player
+// whose balance is fragmented across more coins would otherwise look underfunded or have funds the
+// pick can't reach. Returns { objectId, balance } for every non-empty coin.
+export async function fetchDusdcCoins(
+  client: SuiGrpcClient,
+  owner: string,
+  coinType: string,
+): Promise<{ objectId: string; balance: bigint }[]> {
+  const out: { objectId: string; balance: bigint }[] = [];
+  let cursor: string | null = null;
+  for (;;) {
+    const page = await client.core.listCoins({ owner, coinType, cursor });
+    for (const c of page.objects) {
+      const balance = BigInt(c.balance);
+      if (balance > 0n) out.push({ objectId: c.objectId, balance });
+    }
+    if (!page.hasNextPage) return out;
+    cursor = page.cursor;
+  }
 }

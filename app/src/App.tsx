@@ -1,7 +1,11 @@
 import { useCurrentAccount } from '@mysten/dapp-kit-react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import Login from './pages/Login';
 import Markets from './pages/Markets';
+import Pick from './pages/Pick';
+import type { Market } from './lib/reads';
+import type { Profile } from './hooks/useProfile';
 import { useProfile } from './hooks/useProfile';
 import { useOnboard } from './hooks/useOnboard';
 import { useDusdcBalance } from './hooks/useDusdcBalance';
@@ -30,19 +34,44 @@ function Gate() {
 
   if (!profile.data) return <CreateAccount />;
 
+  return <Home profile={profile.data} unfunded={dusdc.data === 0n} />;
+}
+
+// Markets ⇄ Pick router for an onboarded player. Kept here (not a route lib) — P1 has exactly two
+// screens and a single selected-market handoff.
+function Home({ profile, unfunded }: { profile: Profile; unfunded: boolean }) {
+  const qc = useQueryClient();
+  const [picking, setPicking] = useState<Market | null>(null);
+
+  if (picking) {
+    return (
+      <Pick
+        market={picking}
+        profileId={profile.profileId}
+        managerId={profile.managerId}
+        onBack={() => setPicking(null)}
+        onDone={() => {
+          // Pick spent DUSDC — refresh the balance banner and (Task 6) any picks view.
+          qc.invalidateQueries({ queryKey: ['dusdc'] });
+          setPicking(null);
+        }}
+      />
+    );
+  }
+
   // Funding is shown as a non-blocking banner, NOT a full-screen gate: an onboarded user must
   // always reach Markets (and, in Task 6, MyPicks/settle) even at 0 balance — otherwise spending
   // all DUSDC on a pick would lock them out of their open positions. The "needs funds" hard stop
-  // belongs to the pick action (Task 5), not the whole app. Banner shows only on a CONFIRMED zero.
+  // belongs to the pick action (Pick.tsx), not the whole app. Banner shows only on a CONFIRMED zero.
   return (
     <>
-      {dusdc.data === 0n && (
+      {unfunded && (
         <div className="p-3 bg-amber-50 text-amber-800 text-sm text-center border-b">
           Your account has no DUSDC yet — an admin needs to fund your address before you can place
           a pick. Refreshes automatically.
         </div>
       )}
-      <Markets onPick={(oracleId) => console.log('picked oracle', oracleId)} />
+      <Markets onPick={setPicking} />
     </>
   );
 }

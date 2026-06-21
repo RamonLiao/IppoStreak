@@ -1,4 +1,5 @@
 import { useMarkets } from '../hooks/useMarkets';
+import type { Market } from '../lib/reads';
 
 // Oracle prices carry 9 implied decimals (e.g. spot 63955070622009 == $63,955.07).
 const PRICE_SCALE = 1_000_000_000n;
@@ -7,7 +8,7 @@ function fmtUsd(v: bigint): string {
   return `$${Number(whole).toLocaleString('en-US')}`;
 }
 
-export default function Markets({ onPick }: { onPick: (oracleId: string) => void }) {
+export default function Markets({ onPick }: { onPick: (market: Market) => void }) {
   const { data, isLoading, error } = useMarkets();
 
   if (isLoading) return <div className="p-6">Loading markets…</div>;
@@ -20,7 +21,7 @@ export default function Markets({ onPick }: { onPick: (oracleId: string) => void
       {data.map((m) => (
         <button
           key={m.oracleId}
-          onClick={() => onPick(m.oracleId)}
+          onClick={() => onPick(m)}
           className="border rounded p-3 text-left hover:bg-gray-50"
         >
           <div className="font-medium">
