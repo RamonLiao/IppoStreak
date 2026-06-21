@@ -1,0 +1,43 @@
+%% PredictLeague — module dependency graph (M1-REVISIT, deployed-aligned)
+%% Our package = predict_league (league + badge). Everything below the dashed
+%% line is the DEPLOYED DeepBook Predict / dUSDC packages we CPI into (audit
+%% surface boundary). Edges = Move `use` (import) direction.
+%% Source: move/sources/{league,badge}.move imports; deployed package 0xf5ea2b.
+graph TD
+    subgraph ours["predict_league (our package — 0xc76cfc…e250)"]
+        league["league<br/>(orchestration + season accounting)"]
+        badge["badge<br/>(soulbound achievement NFT)"]
+    end
+
+    subgraph predict["deepbook_predict (deployed 0xf5ea2b — monolithic OracleSVI build, rev 19f86eb)"]
+        p_predict["predict<br/>mint / redeem_permissionless"]
+        p_manager["predict_manager<br/>deposit / withdraw / balance / position"]
+        p_oracle["oracle::OracleSVI<br/>id / expiry / is_active / is_settled / settlement_price"]
+        p_mkey["market_key::MarketKey<br/>new(oracle_id, expiry, strike, is_up)"]
+    end
+
+    dusdc["dusdc::DUSDC<br/>(coin type, 6 decimals)"]
+    sui_fw["Sui framework<br/>clock / table / bag / coin / event / transfer"]
+
+    %% one-way internal edge (badge defines BadgeMintCap to avoid a cycle)
+    league -->|new_mint_cap / mint / upgrade| badge
+
+    %% league -> deployed predict CPI (the entire coupling surface)
+    league -->|mint| p_predict
+    league -->|deposit / balance| p_manager
+    league -->|OracleSVI read| p_oracle
+    league -->|MarketKey value| p_mkey
+    league -->|Coin&lt;DUSDC&gt; stake| dusdc
+
+    league --> sui_fw
+    badge --> sui_fw
+
+    %% predict-internal (informational; not imported by us)
+    p_predict -.-> p_manager
+    p_predict -.-> p_oracle
+    p_predict -.-> p_mkey
+
+    classDef ourcls fill:#e3f2fd,stroke:#1565c0,stroke-width:2px;
+    classDef extcls fill:#f5f5f5,stroke:#9e9e9e,stroke-dasharray:4 3;
+    class league,badge ourcls;
+    class p_predict,p_manager,p_oracle,p_mkey,dusdc,sui_fw extcls;

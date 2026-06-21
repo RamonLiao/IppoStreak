@@ -1,0 +1,65 @@
+%% PredictLeague — data flow (M1-REVISIT, deployed-aligned)
+%% Three lifecycles: onboarding, place_pick, settle_pick. Solid = on-chain
+%% Move call; dashed = off-chain actor / event. Anti-farming invariants are
+%% annotated inline (#1 stake=real cost, #2 on-chain price, V10/V11).
+%% Source: move/sources/league.move.
+sequenceDiagram
+    autonumber
+    actor User as Player (zkLogin sub)
+    participant BE as Backend (VerifierCap / keeper)
+    participant L as league (shared League)
+    participant Reg as SubRegistry (shared)
+    participant PM as PredictManager (shared)
+    participant PR as predict (shared Predict)
+    participant OR as OracleSVI (shared)
+    participant Bot as predict auto-redeem bot
+    participant B as badge
+
+    rect rgb(235, 245, 255)
+    note over User,Reg: Onboarding (D5: one profile per sub)
+    BE->>L: create_profile_and_keep(VerifierCap, sub_commit, predict_manager)
+    L->>Reg: assert sub unused, mark used (ESubAlreadyRegistered)
+    L->>L: stats.add(profile_addr, PlayerStat{})
+    L-->>User: transfer PlayerProfile (key-only, soulbound)
+    end
+
+    rect rgb(235, 255, 240)
+    note over BE,L: Admin publishes daily question (LeagueAdminCap, D4)
+    BE->>OR: read expiry() / id() / is_active() / is_settled()
+    BE->>L: publish_question_for_market(oracle, strike, dir, open_ms)
+    note right of L: V6: expiry_ms derived from oracle.expiry() (cannot drift)<br/>V5: strike-on-grid validated off-chain (grid is public(package))
+    end
+
+    rect rgb(255, 250, 235)
+    note over User,OR: place_pick — composes the REAL predict trade
+    User->>L: place_pick(question_id, qty, max_cost, Coin<DUSDC>)
+    L->>L: guards: !paused, q exists, manager==profile.manager,<br/>now<expiry, oracle.id==q.oracle, no dup pick
+    L->>PM: deposit(stake_coin)
+    L->>PM: bal_before = balance<DUSDC>()
+    L->>PR: mint<DUSDC>(predict, manager, oracle, MarketKey, qty) [V10 assert_live_oracle]
+    L->>PM: bal_after = balance<DUSDC>()
+    note right of L: #1 stake = bal_before - bal_after (real consumed cash)<br/>EZeroStake if delta==0; V11 EMaxCostExceeded if cost>max_cost
+    L->>L: book_pick: roll_streak + open_picks.add(Pick), emit PickPlaced
+    end
+
+    rect rgb(255, 240, 245)
+    note over OR,Bot: Settlement window (permissionless, D2)
+    OR-->>OR: oracle settles → settlement_price: Some(u64)
+    Bot-->>PM: redeem_permissionless(...) within ~14s → position(key)=0
+    note over Bot: why hold-to-settle was REMOVED:<br/>position is auto-zeroed before any keeper can settle
+    BE->>L: settle_pick(oracle, profile_addr, question_id) [any keeper]
+    L->>L: guards: q exists, now>=expiry (ENotExpired),<br/>oracle.id==q.oracle (EOracleMismatch)
+    L->>OR: is_settled() + settlement_price() [#2/F8 on-chain price, no fake]
+    L->>L: book_settle: remove pick (idempotent, EAlreadySettled),<br/>outcome_is_win(price,strike,dir), award stake-weighted points
+    L-->>User: emit PickSettled(won, points)
+    User->>PM: withdraw<DUSDC>(own withdraw_cap) [trustless custody]
+    end
+
+    rect rgb(245, 240, 255)
+    note over User,B: Badge sync (user-signed, F7 — keeper can't mutate owned Badge)
+    User->>L: mint_badge(profile) [#3 once-guard EBadgeAlreadyMinted]
+    L->>B: badge::mint(BadgeMintCap, sender, tier_for_streak(best))
+    B-->>User: transfer Badge (soulbound)
+    User->>L: sync_badge(profile, badge) [upgrade-only]
+    L->>B: badge::upgrade(...) [EInvalidTier on downgrade/no-op]
+    end

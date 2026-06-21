@@ -18,3 +18,6 @@ dist/
 # Claude-related (do not upload per user rule)
 .claude/
 CLAUDE.md
+plan.md
+.playwright-mcp/
+
