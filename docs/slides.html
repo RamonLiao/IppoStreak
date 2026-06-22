@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>IppoStreak — Sui Overflow 2026</title>
+<style>
+  :root{
+    --navy:#0d1b3e; --navy2:#10245a; --ink:#0a1430;
+    --teal:#2bb3c0; --teal-l:#46d9e6; --orange:#f26a2e; --orange-l:#ff9a5c;
+    --paper:#eaf6f8; --muted:#9fb3d6; --card:rgba(255,255,255,.06);
+    --line:rgba(120,200,220,.22);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;overflow:hidden;background:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;color:var(--paper);-webkit-font-smoothing:antialiased}
+
+  /* horizontal scroll-snap track */
+  .deck{
+    display:flex;height:100vh;width:100vw;overflow-x:auto;overflow-y:hidden;
+    scroll-snap-type:x mandatory;scroll-behavior:smooth;
+    scrollbar-width:none;
+  }
+  .deck::-webkit-scrollbar{display:none}
+  .slide{
+    flex:0 0 100vw;height:100vh;scroll-snap-align:center;scroll-snap-stop:always;
+    position:relative;display:flex;flex-direction:column;justify-content:center;
+    padding:6vh 9vw;
+    background:radial-gradient(1200px 700px at 80% -10%,var(--navy2),var(--navy) 55%,var(--ink) 100%);
+    overflow:hidden;
+  }
+  .slide::after{ /* faint mascot watermark */
+    content:"";position:absolute;right:-6%;bottom:-12%;width:46vh;height:46vh;
+    background:url("logo_1.png") no-repeat center/contain;opacity:.05;pointer-events:none;
+  }
+
+  .kicker{font-size:.85rem;letter-spacing:.32em;text-transform:uppercase;color:var(--teal-l);font-weight:700;margin-bottom:1.4rem}
+  h1{font-size:clamp(2.4rem,6vw,5rem);line-height:1.02;font-weight:800;letter-spacing:-.02em}
+  h2{font-size:clamp(1.9rem,4.2vw,3.3rem);line-height:1.06;font-weight:800;letter-spacing:-.015em;margin-bottom:2.2rem}
+  .lead{font-size:clamp(1.05rem,1.9vw,1.5rem);color:var(--muted);max-width:60ch;line-height:1.5;margin-top:1.6rem}
+  .grad{background:linear-gradient(100deg,var(--teal-l),var(--orange-l));-webkit-background-clip:text;background-clip:text;color:transparent}
+
+  .rows{display:flex;flex-direction:column;gap:1.1rem;max-width:74ch}
+  .row{display:flex;gap:1.1rem;align-items:flex-start;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:1.15rem 1.35rem}
+  .row .ic{flex:0 0 auto;font-size:1.6rem;line-height:1}
+  .row h3{font-size:clamp(1.05rem,1.7vw,1.4rem);font-weight:700;margin-bottom:.25rem}
+  .row p{font-size:clamp(.92rem,1.4vw,1.1rem);color:var(--muted);line-height:1.45}
+  .row b{color:var(--teal-l);font-weight:700}
+  .row .o{color:var(--orange-l)}
+
+  /* title slide */
+  .title-wrap{display:flex;align-items:center;gap:6vw;flex-wrap:wrap}
+  .title-logo{width:min(34vh,360px);aspect-ratio:1;filter:drop-shadow(0 24px 50px rgba(0,0,0,.55))}
+  .badge{display:inline-block;margin-top:1.8rem;font-size:.82rem;letter-spacing:.06em;color:var(--paper);
+    border:1px solid var(--line);background:var(--card);border-radius:999px;padding:.5rem 1.1rem}
+
+  /* flow / steps */
+  .flow{display:flex;gap:.7rem;flex-wrap:wrap;margin-top:.6rem}
+  .step{flex:1 1 150px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:1.1rem;min-width:140px}
+  .step .n{font-size:.8rem;color:var(--orange-l);font-weight:800;letter-spacing:.1em}
+  .step h4{font-size:1.05rem;margin:.4rem 0 .3rem;font-weight:700}
+  .step p{font-size:.88rem;color:var(--muted);line-height:1.4}
+  .arrow{align-self:center;color:var(--teal);font-size:1.4rem;font-weight:800}
+
+  .stack{display:flex;flex-wrap:wrap;gap:.6rem;margin-top:1.8rem}
+  .chip{font-size:.85rem;background:rgba(43,179,192,.14);border:1px solid var(--line);color:var(--teal-l);border-radius:999px;padding:.45rem 1rem;font-weight:600}
+
+  .big-stat{font-size:clamp(3rem,9vw,7rem);font-weight:900;line-height:.95;letter-spacing:-.03em}
+  .closing{text-align:center;align-items:center}
+  .closing h1{margin-bottom:1.2rem}
+
+  /* nav */
+  .nav{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:14px;z-index:20}
+  .nav button{width:46px;height:46px;border-radius:50%;border:1px solid var(--line);background:rgba(10,20,48,.7);backdrop-filter:blur(8px);color:var(--paper);font-size:1.3rem;cursor:pointer;transition:.2s;display:flex;align-items:center;justify-content:center}
+  .nav button:hover{background:var(--teal);color:var(--ink);border-color:var(--teal)}
+  .dots{display:flex;gap:9px}
+  .dot{width:9px;height:9px;border-radius:50%;background:rgba(159,179,214,.35);cursor:pointer;transition:.25s}
+  .dot.on{background:var(--orange);transform:scale(1.35)}
+  .counter{position:fixed;top:22px;right:30px;font-size:.85rem;color:var(--muted);letter-spacing:.1em;z-index:20}
+  .hint{position:fixed;top:22px;left:30px;font-size:.78rem;color:var(--muted);letter-spacing:.08em;z-index:20;opacity:.7}
+
+  @media (max-width:640px){ .slide{padding:5vh 7vw} .title-wrap{gap:4vh} }
+</style>
+</head>
+<body>
+
+<div class="counter"><span id="cur">1</span> / <span id="tot">7</span></div>
+<div class="hint">← → swipe / arrow keys</div>
+
+<div class="deck" id="deck">
+
+  <!-- 1 Title -->
+  <section class="slide">
+    <div class="title-wrap">
+      <img class="title-logo" src="logo_1.png" alt="IppoStreak seahorse mascot" />
+      <div>
+        <div class="kicker">Sui Overflow 2026 · DeepBook &amp; Prediction Markets</div>
+        <h1><span class="grad">IppoStreak</span></h1>
+        <p class="lead">A free-to-play prediction season on Sui — powered by DeepBook Predict, zkLogin and Sponsored Transactions.</p>
+        <span class="badge">Sign-in → first pick in under 30 seconds</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2 Problem -->
+  <section class="slide">
+    <div class="kicker">The Problem</div>
+    <h2>Prediction markets have huge<br/>potential — and three walls.</h2>
+    <div class="rows">
+      <div class="row"><span class="ic">🧗</span><div><h3>The onboarding cliff</h3><p>Install a wallet, bridge assets, buy gas — all <b>before</b> the first pick. Casual fans give up.</p></div></div>
+      <div class="row"><span class="ic">💧</span><div><h3>Thin long-tail liquidity</h3><p>DeepBook Predict needs steady flow across every strike &amp; expiry to mature its SVI surface. Bots only touch the liquid few.</p></div></div>
+      <div class="row"><span class="ic">📉</span><div><h3>Speculation decays</h3><p>SocialFi apps die without real gameplay or retention — pure token speculation isn't a loop.</p></div></div>
+    </div>
+  </section>
+
+  <!-- 3 Solution -->
+  <section class="slide">
+    <div class="kicker">The Solution</div>
+    <h2>The zero-friction consumer<br/>gateway to DeepBook.</h2>
+    <div class="rows">
+      <div class="row"><span class="ic">🔑</span><div><h3>Zero-friction onboarding</h3><p>Sign in with Google via <b>zkLogin</b>. No seed phrase. A Sui address &amp; <b>PredictManager</b> are derived in seconds.</p></div></div>
+      <div class="row"><span class="ic">💸</span><div><h3>Gasless play-to-earn</h3><p>First <span class="o">10 picks free</span> — gas &amp; faucet dUSDC sponsored via Sui <b>Sponsored Transactions</b>.</p></div></div>
+      <div class="row"><span class="ic">📈</span><div><h3>Real on-chain settlement</h3><p>Every pick fires a real <b>predict::mint</b> against the DeepBook CLOB. The whole leaderboard is auditable on-chain.</p></div></div>
+    </div>
+  </section>
+
+  <!-- 4 Demo loop -->
+  <section class="slide">
+    <div class="kicker">Live Demo · The Core Loop</div>
+    <h2>Onboard → Pick → Streak</h2>
+    <div class="flow">
+      <div class="step"><div class="n">01</div><h4>Onboard 🔑</h4><p>Continue with Google. zkLogin address + PredictManager + profile, gas sponsored.</p></div>
+      <div class="arrow">→</div>
+      <div class="step"><div class="n">02</div><h4>Pick 📈</h4><p>Live BTC markets read off-chain. Real predict::mint; stake = true balance delta.</p></div>
+      <div class="arrow">→</div>
+      <div class="step"><div class="n">03</div><h4>Streak 🐚</h4><p>Permissionless settle. Seahorse Badge NFT mutates Bronze → Silver → Gold in place.</p></div>
+    </div>
+    <p class="lead">Every step is real, on-chain and auditable — no backend custody key, no hidden database.</p>
+  </section>
+
+  <!-- 5 Stack -->
+  <section class="slide">
+    <div class="kicker">Sui Primitives Composed</div>
+    <h2>Built entirely from native<br/>Sui building blocks.</h2>
+    <div class="rows" style="max-width:80ch">
+      <div class="row"><span class="ic">⚙️</span><div><h3>DeepBook Predict</h3><p>Direct <b>predict::mint</b> / <b>redeem</b> for authentic CLOB settlement.</p></div></div>
+      <div class="row"><span class="ic">🪪</span><div><h3>Mysten Enoki (zkLogin) + Sponsored Tx</h3><p>OAuth onboarding with gas abstracted away for retail.</p></div></div>
+      <div class="row"><span class="ic">🧬</span><div><h3>Move object mutability + PTBs</h3><p>In-place NFT badge upgrades; up to <span class="o">50 follower copies</span> batched atomically.</p></div></div>
+    </div>
+    <div class="stack">
+      <span class="chip">zkLogin</span><span class="chip">Sponsored Transactions</span><span class="chip">DeepBook Predict</span><span class="chip">Dynamic NFT</span><span class="chip">PTBs</span><span class="chip">Zero backend</span>
+    </div>
+  </section>
+
+  <!-- 6 Future -->
+  <section class="slide">
+    <div class="kicker">Future Vision</div>
+    <h2>From a game on DeepBook<br/>to a <span class="grad">liquidity funnel</span> for it.</h2>
+    <div class="rows" style="max-width:78ch">
+      <div class="row"><span class="ic">👥</span><div><h3>Team Mode — social copy-trading</h3><p>Follow a KOL leader; their pick mirrors to every follower in <b>one batched PTB</b> (up to 50 copies, atomic). One good predictor becomes liquidity across the book.</p></div></div>
+      <div class="row"><span class="ic">🌊</span><div><h3>Maturing the SVI surface</h3><p>Every casual pick is genuine volume spread across strikes &amp; expiries — exactly the <b>long-tail flow</b> DeepBook's volatility surface needs.</p></div></div>
+    </div>
+    <p class="lead">IppoStreak isn't just a game on top of DeepBook — it <b style="color:var(--orange-l)">feeds</b> it.</p>
+  </section>
+
+  <!-- 7 Closing -->
+  <section class="slide closing">
+    <img class="title-logo" src="logo_1.png" alt="IppoStreak" style="width:min(26vh,260px)" />
+    <h1 style="margin-top:1.4rem"><span class="grad">IppoStreak</span></h1>
+    <p class="lead" style="text-align:center;margin-inline:auto">Zero-friction onboarding · real on-chain settlement · a flywheel for liquidity.</p>
+    <span class="badge" style="margin-top:2rem">Thank you — let's predict 🥊</span>
+  </section>
+
+</div>
+
+<div class="nav">
+  <button id="prev" aria-label="Previous">‹</button>
+  <div class="dots" id="dots"></div>
+  <button id="next" aria-label="Next">›</button>
+</div>
+
+<script>
+  const deck=document.getElementById('deck');
+  const slides=[...deck.children];
+  const dotsWrap=document.getElementById('dots');
+  const cur=document.getElementById('cur');
+  document.getElementById('tot').textContent=slides.length;
+
+  slides.forEach((_,i)=>{
+    const d=document.createElement('div');d.className='dot'+(i===0?' on':'');
+    d.onclick=()=>go(i);dotsWrap.appendChild(d);
+  });
+  const dots=[...dotsWrap.children];
+
+  let idx=0;
+  function go(i){ idx=Math.max(0,Math.min(slides.length-1,i));
+    deck.scrollTo({left:idx*window.innerWidth,behavior:'smooth'}); update(); }
+  function update(){ dots.forEach((d,i)=>d.classList.toggle('on',i===idx)); cur.textContent=idx+1; }
+
+  document.getElementById('next').onclick=()=>go(idx+1);
+  document.getElementById('prev').onclick=()=>go(idx-1);
+
+  // keep idx in sync on manual scroll/swipe
+  let t;deck.addEventListener('scroll',()=>{clearTimeout(t);t=setTimeout(()=>{
+    idx=Math.round(deck.scrollLeft/window.innerWidth);update();},80);});
+
+  window.addEventListener('keydown',e=>{
+    if(e.key==='ArrowRight'||e.key==='PageDown'||e.key===' ')(go(idx+1),e.preventDefault());
+    if(e.key==='ArrowLeft'||e.key==='PageUp')go(idx-1);
+    if(e.key==='Home')go(0); if(e.key==='End')go(slides.length-1);
+  });
+  window.addEventListener('resize',()=>deck.scrollTo({left:idx*window.innerWidth}));
+</script>
+</body>
+</html>
